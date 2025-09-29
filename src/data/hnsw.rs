@@ -1,6 +1,12 @@
+use dashmap::DashMap;
 use hnsw_rs::prelude::*;
 use once_cell::sync::Lazy;
+use rocksdb::DB;
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
+
+static USER_IDS_BY_GENDER: Lazy<DashMap<String, HashSet<usize>>> = Lazy::new(|| DashMap::new());
+// static SWIPED_IDS: Lazy<DashMap<usize, HashSet<usize>>> = Lazy::new(|| DashMap::new());
 
 // Configure HNSW options
 fn hnsw_options() -> (usize, usize, usize, usize, DistCosine) {
@@ -21,6 +27,50 @@ static HNSW_INDEX: Lazy<Arc<RwLock<Hnsw<'static, f32, DistCosine>>>> = Lazy::new
 // Access helper
 pub fn get_hnsw_index() -> Arc<RwLock<Hnsw<'static, f32, DistCosine>>> {
     HNSW_INDEX.clone()
+}
+
+pub fn get_allowed_ids(db: &Arc<DB>, user_id: usize, pref_genders: &[u8]) -> HashSet<usize> {
+    // Start with users matching gender preferences
+    let mut allowed_ids = HashSet::new();
+
+    for &gender in pref_genders {
+        let gender_key = gender.to_string();
+        if let Some(entry) = USER_IDS_BY_GENDER.get(&gender_key) {
+            allowed_ids.extend(entry.iter());
+        }
+    }
+
+    // Remove already swiped users by querying RocksDB
+    let swipe_prefix = format!("swipe:{}:", user_id);
+    let iter = db.prefix_iterator(swipe_prefix.as_bytes());
+
+    for item in iter {
+        if let Ok((key, _)) = item {
+            if let Ok(key_str) = std::str::from_utf8(&key) {
+                // Parse swipe key format: "swipe:<user_id>:<swiped_user_id>"
+                let parts: Vec<&str> = key_str.split(':').collect();
+                if parts.len() == 3 {
+                    if let Ok(swiped_id) = parts[2].parse::<usize>() {
+                        allowed_ids.remove(&swiped_id);
+                    }
+                }
+            }
+        }
+    }
+
+    // Remove the user themselves
+    allowed_ids.remove(&user_id);
+
+    allowed_ids
+}
+
+// Helper functions to manage the DashMaps
+pub fn add_user_to_gender(user_id: usize, gender: u8) {
+    let gender_key = gender.to_string();
+    USER_IDS_BY_GENDER
+        .entry(gender_key)
+        .or_insert_with(HashSet::new)
+        .insert(user_id);
 }
 
 #[cfg(test)]

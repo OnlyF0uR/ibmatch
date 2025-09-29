@@ -4,14 +4,25 @@ use bincode::{
     Decode, Encode,
     config::{self},
 };
+use hnsw_rs::hnsw::FilterT;
 use rocksdb::DB;
 
 use crate::{
-    combine_embeddings,
     data::hnsw,
     embed::{self, INTEREST_EMB_DIM},
 };
 use crate::{embed::TEXT_EMB_DIM, errors::MatchError};
+
+/// Filter implementation for HNSW search
+struct UserFilter {
+    allowed_ids: std::collections::HashSet<usize>,
+}
+
+impl FilterT for UserFilter {
+    fn hnsw_filter(&self, id: &hnsw_rs::prelude::DataId) -> bool {
+        self.allowed_ids.contains(&id)
+    }
+}
 
 /// Represents a user's preferences for matching
 #[derive(Debug, Encode, Decode)]
@@ -33,6 +44,7 @@ pub struct Meta {
 /// Full user profile with multiplier for boosting
 #[derive(Debug, Encode, Decode)]
 pub struct UserProfile {
+    pub user_id: u32,
     pub age: u8,
     pub gender: u8,               // Gender index (0=M, 1=F, 2=O)
     pub location: [f64; 2],       // lat/lon
@@ -47,6 +59,8 @@ pub struct UserProfile {
 impl UserProfile {
     /// Function to create a new user (we shall infer embeddings)
     pub fn create_new(
+        db: &Arc<DB>,
+        user_id: u32,
         age: u8,
         gender: u8,
         location: [f64; 2],
@@ -65,6 +79,7 @@ impl UserProfile {
 
         // 2. Create user profile with default values
         let user = UserProfile {
+            user_id,
             age,
             gender,
             location,
@@ -81,22 +96,10 @@ impl UserProfile {
             norm_rating: 0.5,
         };
 
+        // 3. Store the user in the DB and HNSW
+        user.store_user(db)?;
+
         Ok(user)
-    }
-
-    /// Store a user
-    pub fn store_user(db: &Arc<DB>, user_id: u32, user: &UserProfile) -> Result<(), MatchError> {
-        let key = format!("user:{}", user_id);
-        let value = user.encode()?;
-
-        db.put(key.as_bytes(), &value)?;
-
-        // Add the user into the HNSW index
-        let hnsw = hnsw::get_hnsw_index();
-        let hnsw_write = hnsw.write()?;
-        hnsw_write.insert((&user.text_embedding, user_id as usize));
-
-        Ok(())
     }
 
     /// Load a user
@@ -114,21 +117,75 @@ impl UserProfile {
         let hnsw_write = hnsw.write()?;
         hnsw_write.insert((&parsed.text_embedding, user_id as usize));
 
+        // Add to gender mapping
+        hnsw::add_user_to_gender(user_id as usize, parsed.gender);
+
         Ok(parsed)
     }
 
     /// Search
-    pub fn search(&self) -> Result<Vec<UserProfile>, MatchError> {
+    pub fn search(&self, db: &Arc<DB>, top_k: usize) -> Result<Vec<UserProfile>, MatchError> {
         // Now note that self is the user that is searching
         // so we can filter based on preferences
         // We can combine embeddings using embed::combine_embeddings
         // And use those as a basis for the search
 
         let _combined =
-            combine_embeddings(&self.text_embedding, &self.interest_embeddings, (0.4, 0.5))?;
+            embed::combine_embeddings(&self.text_embedding, &self.interest_embeddings, (0.4, 0.5))?;
 
-        // TODO: Implement this
-        todo!();
+        // Get the allowed gender ids
+        // these are the ids of users of which we can prefilter on gender
+        let allowed_ids =
+            hnsw::get_allowed_ids(db, self.user_id as usize, &self.preferences.gender);
+
+        let hnsw = hnsw::get_hnsw_index();
+        let hnsw_read = hnsw.read()?;
+
+        let filter = UserFilter { allowed_ids };
+        let search = hnsw_read.search_filter(&self.text_embedding, top_k * 5, 16, Some(&filter));
+
+        // Now lets post filter on age etc.
+
+        // Here we have the IDs of the candidates
+        let mut users = Vec::new();
+        for n in search {
+            let candidate = UserProfile::load_user(&db, n.d_id as u32)?;
+            if self.post_filter(&candidate) {
+                users.push(candidate);
+            }
+        }
+
+        Ok(users)
+    }
+
+    fn post_filter(&self, _candidate: &UserProfile) -> bool {
+        // TODO: implement filtering based on age range, distance, rating, plan, banned status etc.
+
+        // Also handle recent swipes
+        true
+    }
+
+    /// Store a user
+    fn store_user(&self, db: &Arc<DB>) -> Result<(), MatchError> {
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+
+        db.put(key.as_bytes(), &value)?;
+
+        // Add the user into the HNSW index
+        let hnsw = hnsw::get_hnsw_index();
+        let hnsw_write = hnsw.write()?;
+        hnsw_write.insert((&self.text_embedding, self.user_id as usize));
+
+        // Add user to gender mapping
+        hnsw::add_user_to_gender(self.user_id as usize, self.gender);
+
+        // And potentially in the dashmap for swipes
+        // but we would need to get who swiped this user
+        // in order to update that map
+        // so for now we let the post filter handle those cases
+
+        Ok(())
     }
 
     /// Encode the UserProfile to a byte vector using bincode
@@ -182,6 +239,10 @@ pub fn bulk_load(
                         // Insert text embedding into HNSW index
                         let hnsw_write = hnsw.write()?;
                         hnsw_write.insert((&user_profile.text_embedding, user_id));
+
+                        // Add user to gender mapping
+                        hnsw::add_user_to_gender(user_id, user_profile.gender);
+
                         loaded_count += 1;
                     }
                 }
@@ -200,6 +261,7 @@ mod tests {
     #[test]
     fn test_encode_decode() {
         let user = UserProfile {
+            user_id: 1,
             age: 24,
             gender: 1,
             location: [52.3702, 4.895],
@@ -249,6 +311,7 @@ mod tests {
     #[test]
     fn test_multiple_gender_preferences() {
         let user = UserProfile {
+            user_id: 1,
             age: 30,
             gender: 2,
             location: [40.7128, -74.0060], // NYC coordinates
@@ -272,6 +335,7 @@ mod tests {
         let encoded = user.encode().expect("Failed to encode user");
         let decoded = UserProfile::decode(&encoded).expect("Failed to decode user");
 
+        assert_eq!(decoded.age, user.age);
         assert_eq!(decoded.preferences.gender.len(), 3);
         assert_eq!(decoded.preferences.gender, user.preferences.gender);
         assert_eq!(decoded.meta.plan, user.meta.plan);
@@ -281,6 +345,7 @@ mod tests {
     #[test]
     fn test_empty_gender_preferences() {
         let user = UserProfile {
+            user_id: 1,
             age: 25,
             gender: 0,
             location: [0.0, 0.0],
@@ -311,6 +376,7 @@ mod tests {
     #[test]
     fn test_boundary_values() {
         let user = UserProfile {
+            user_id: u32::MAX,
             age: 255,                  // Max u8
             gender: 0,                 // Empty string
             location: [-90.0, -180.0], // Min lat/lon
@@ -334,6 +400,7 @@ mod tests {
         let encoded = user.encode().expect("Failed to encode user");
         let decoded = UserProfile::decode(&encoded).expect("Failed to decode user");
 
+        assert_eq!(decoded.user_id, user.user_id);
         assert_eq!(decoded.age, 255);
         assert_eq!(decoded.gender, 0);
         assert_eq!(decoded.preferences.distance_km, u32::MAX);

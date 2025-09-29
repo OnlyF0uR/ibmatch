@@ -3,7 +3,6 @@ use crate::errors::MatchError;
 mod db;
 mod hnsw;
 
-pub mod api;
 pub mod user;
 
 pub fn initialize() -> Result<(), MatchError> {
