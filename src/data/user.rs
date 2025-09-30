@@ -30,6 +30,7 @@ pub struct Preferences {
     pub gender: Vec<u8>, // Gender indeces the user is interested in (0=M, 1=F, 2=O)
     pub age_range: [u8; 2], // min and max age
     pub distance_km: u32, // maximum distance
+    pub min_height_cm: u16, // maximum height of a person
 }
 
 /// Metadata for internal tracking
@@ -46,7 +47,8 @@ pub struct Meta {
 pub struct UserProfile {
     pub user_id: u32,
     pub age: u8,
-    pub gender: u8, // Gender index (0=M, 1=F, 2=O)
+    pub gender: u8,     // Gender index (0=M, 1=F, 2=O)
+    pub height_cm: u16, // Height in cm
 
     pub likeness_score: f32,   // Overall likeness score (0.0 to 1.0)
     pub preference_score: f32, // Overall preference score (0.0 to 1.0)
@@ -72,6 +74,7 @@ impl UserProfile {
         user_id: u32,
         age: u8,
         gender: u8,
+        height_cm: u16,
         location: [f64; 2],
         preferences: Preferences,
         raw_intersts: &[u32],
@@ -92,6 +95,7 @@ impl UserProfile {
             user_id,
             age,
             gender,
+            height_cm,
             likeness_score: 0.5,   // Neutral initial likeness score
             preference_score: 0.5, // Neutral initial preference score
             norm_rating: 0.5,
@@ -314,6 +318,7 @@ impl UserProfile {
         let mut min_age = self.preferences.age_range[0];
         let mut max_age = self.preferences.age_range[1];
         let mut max_distance = self.preferences.distance_km;
+        let min_height = self.preferences.min_height_cm;
 
         if strictness_level == 0 {
             // Age range
@@ -352,6 +357,11 @@ impl UserProfile {
             if self.distance_in_km(candidate) > max_distance as f64 {
                 return (false, 0.0);
             }
+        }
+
+        // Ensure that the candidate is not smaller than min height
+        if candidate.height_cm < min_height {
+            return (false, 0.0);
         }
 
         // TODO: Calculate score on which we shall sort later:
@@ -474,6 +484,7 @@ mod tests {
             user_id: 1,
             age: 24,
             gender: 1,
+            height_cm: 190,
             likeness_score: 0.5,
             preference_score: 0.5,
             norm_rating: 0.75,
@@ -484,6 +495,7 @@ mod tests {
                 gender: vec![0],
                 age_range: [22, 28],
                 distance_km: 50,
+                min_height_cm: 200,
             },
             meta: Meta {
                 last_seen: 1_695_900_000,
@@ -507,6 +519,7 @@ mod tests {
         assert_eq!(decoded.user_id, user.user_id);
         assert_eq!(decoded.age, user.age);
         assert_eq!(decoded.gender, user.gender);
+        assert_eq!(decoded.height_cm, user.height_cm);
         assert_eq!(decoded.likeness_score, user.likeness_score);
         assert_eq!(decoded.preference_score, user.preference_score);
         assert_eq!(decoded.norm_rating, user.norm_rating);
@@ -518,6 +531,10 @@ mod tests {
         assert_eq!(
             decoded.preferences.distance_km,
             user.preferences.distance_km
+        );
+        assert_eq!(
+            decoded.preferences.min_height_cm,
+            user.preferences.min_height_cm
         );
         assert_eq!(decoded.meta.last_seen, user.meta.last_seen);
         assert_eq!(decoded.meta.impressions_today, user.meta.impressions_today);
@@ -534,6 +551,7 @@ mod tests {
             user_id: 1,
             age: 30,
             gender: 2,
+            height_cm: 175,
             likeness_score: 0.5,
             preference_score: 0.5,
             norm_rating: 0.85,
@@ -544,6 +562,7 @@ mod tests {
                 gender: vec![0, 1, 2],
                 age_range: [18, 65],
                 distance_km: 100,
+                min_height_cm: 210,
             },
             meta: Meta {
                 last_seen: 1_700_000_000,
@@ -574,6 +593,7 @@ mod tests {
             user_id: 1,
             age: 25,
             gender: 0,
+            height_cm: 180,
             likeness_score: 0.5,
             preference_score: 0.5,
             norm_rating: 0.5,
@@ -584,6 +604,7 @@ mod tests {
                 gender: vec![],
                 age_range: [18, 99],
                 distance_km: 1,
+                min_height_cm: 250,
             },
             meta: Meta {
                 last_seen: 0,
@@ -607,8 +628,9 @@ mod tests {
     fn test_boundary_values() {
         let user = UserProfile {
             user_id: u32::MAX,
-            age: 255,  // Max u8
-            gender: 0, // Empty string
+            age: 255,            // Max u8
+            gender: 0,           // Empty string
+            height_cm: u16::MAX, // Max u16
             likeness_score: 1.0,
             preference_score: 0.0,
             norm_rating: 0.0, // Min normalized rating
@@ -617,8 +639,9 @@ mod tests {
             location: [-90.0, -180.0], // Min lat/lon
             preferences: Preferences {
                 gender: vec![0],
-                age_range: [0, 255],   // Full u8 range
-                distance_km: u32::MAX, // Max distance
+                age_range: [0, 255],     // Full u8 range
+                distance_km: u32::MAX,   // Max distance
+                min_height_cm: u16::MAX, // Max height
             },
             meta: Meta {
                 last_seen: u64::MAX,
@@ -637,12 +660,14 @@ mod tests {
         assert_eq!(decoded.user_id, user.user_id);
         assert_eq!(decoded.age, 255);
         assert_eq!(decoded.gender, 0);
+        assert_eq!(decoded.height_cm, u16::MAX);
         assert_eq!(decoded.likeness_score, 1.0);
         assert_eq!(decoded.preference_score, 0.0);
         assert_eq!(decoded.norm_rating, 0.0);
         assert_eq!(decoded.likeness_updates, u32::MAX);
         assert_eq!(decoded.preference_updates, u32::MAX);
         assert_eq!(decoded.preferences.distance_km, u32::MAX);
+        assert_eq!(decoded.preferences.min_height_cm, u16::MAX);
         assert_eq!(decoded.meta.last_seen, u64::MAX);
         assert_eq!(decoded.multiplier, f32::MAX);
         assert_eq!(decoded.text_embedding, user.text_embedding);
