@@ -43,6 +43,7 @@ pub struct DisplayMeta {
     pub name: String,
     pub bio: String,
     pub interests: Vec<u32>,          // Interest IDs
+    pub primary_interests: Vec<u32>,  // Primary Interest IDs
     pub img_storage_ids: Vec<String>, // Storage IDs for user images
     pub location_name: String,
     pub looking_for: Option<u16>,
@@ -54,7 +55,6 @@ pub struct DisplayMeta {
 #[derive(Debug, Encode, Decode)]
 pub struct Meta {
     pub last_seen: u64, // Unix timestamp
-    pub plan: u8,       // 0=free, 1=premium
     pub banned: bool,
 }
 
@@ -76,8 +76,10 @@ pub struct UserProfile {
 
     pub location: [f64; 2],       // lat/lon
     pub preferences: Preferences, // Matching preference / filters
+
     pub meta: Meta,
     pub display_meta: DisplayMeta,
+
     pub multiplier: f32, // exposure / scoring multiplier, like boosters
     pub multiplier_expiry: Option<u64>, // Unix timestamp when multiplier expires
 
@@ -125,7 +127,6 @@ impl UserProfile {
             preferences,
             meta: Meta {
                 last_seen: now,
-                plan: 0,
                 banned: false,
             },
             display_meta,
@@ -689,13 +690,13 @@ mod tests {
             },
             meta: Meta {
                 last_seen: 1_695_900_000,
-                plan: 1,
                 banned: false,
             },
             display_meta: DisplayMeta {
                 name: "Alice".to_string(),
                 bio: "Love hiking and outdoor adventures.".to_string(),
                 interests: vec![1, 2, 3],
+                primary_interests: vec![1, 3],
                 img_storage_ids: vec!["img1".to_string(), "img2".to_string()],
                 location_name: "Amsterdam".to_string(),
                 looking_for: Some(1),
@@ -738,11 +739,14 @@ mod tests {
             user.preferences.min_height_cm
         );
         assert_eq!(decoded.meta.last_seen, user.meta.last_seen);
-        assert_eq!(decoded.meta.plan, user.meta.plan);
         assert_eq!(decoded.meta.banned, user.meta.banned);
         assert_eq!(decoded.display_meta.name, user.display_meta.name);
         assert_eq!(decoded.display_meta.bio, user.display_meta.bio);
         assert_eq!(decoded.display_meta.interests, user.display_meta.interests);
+        assert_eq!(
+            decoded.display_meta.primary_interests,
+            user.display_meta.primary_interests
+        );
         assert_eq!(
             decoded.display_meta.img_storage_ids,
             user.display_meta.img_storage_ids
@@ -791,13 +795,13 @@ mod tests {
             },
             meta: Meta {
                 last_seen: 1_700_000_000,
-                plan: 0,
                 banned: false,
             },
             display_meta: DisplayMeta {
                 name: "Bob".to_string(),
                 bio: "Tech enthusiast and foodie.".to_string(),
                 interests: vec![4, 5, 6],
+                primary_interests: vec![5],
                 img_storage_ids: vec!["img3".to_string(), "img4".to_string()],
                 location_name: "New York".to_string(),
                 looking_for: None,
@@ -816,7 +820,6 @@ mod tests {
         assert_eq!(decoded.age, user.age);
         assert_eq!(decoded.preferences.gender.len(), 3);
         assert_eq!(decoded.preferences.gender, user.preferences.gender);
-        assert_eq!(decoded.meta.plan, user.meta.plan);
         assert_eq!(decoded.meta.banned, user.meta.banned);
         assert_eq!(decoded.display_meta.name, user.display_meta.name);
         assert_eq!(decoded.display_meta.bio, user.display_meta.bio);
@@ -846,13 +849,13 @@ mod tests {
             },
             meta: Meta {
                 last_seen: 0,
-                plan: 0,
                 banned: true,
             },
             display_meta: DisplayMeta {
                 name: "".to_string(),
                 bio: "".to_string(),
                 interests: vec![],
+                primary_interests: vec![],
                 img_storage_ids: vec![],
                 location_name: "".to_string(),
                 looking_for: None,
@@ -894,13 +897,13 @@ mod tests {
             },
             meta: Meta {
                 last_seen: u64::MAX,
-                plan: 1,
                 banned: false,
             },
             display_meta: DisplayMeta {
                 name: "".to_string(),
                 bio: "".to_string(),
                 interests: vec![],
+                primary_interests: vec![],
                 img_storage_ids: vec![],
                 location_name: "".to_string(),
                 looking_for: None,
@@ -928,11 +931,11 @@ mod tests {
         assert_eq!(decoded.preferences.distance_km, u32::MAX);
         assert_eq!(decoded.preferences.min_height_cm, u16::MAX);
         assert_eq!(decoded.meta.last_seen, u64::MAX);
-        assert_eq!(decoded.meta.plan, 1);
         assert!(!decoded.meta.banned);
         assert_eq!(decoded.display_meta.name, "");
         assert_eq!(decoded.display_meta.bio, "");
         assert_eq!(decoded.display_meta.interests.len(), 0);
+        assert_eq!(decoded.display_meta.primary_interests.len(), 0);
         assert_eq!(decoded.display_meta.img_storage_ids.len(), 0);
         assert_eq!(decoded.display_meta.location_name, "");
         assert_eq!(decoded.display_meta.looking_for, None);
