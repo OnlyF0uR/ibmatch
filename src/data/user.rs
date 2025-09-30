@@ -25,7 +25,7 @@ impl FilterT for UserFilter {
 }
 
 /// Represents a user's preferences for matching
-#[derive(Debug, Encode, Decode)]
+#[derive(Debug, Encode, Decode, Clone)]
 pub struct Preferences {
     pub gender: Vec<u8>, // Gender indeces the user is interested in (0=M, 1=F, 2=O)
     pub age_range: [u8; 2], // min and max age
@@ -188,7 +188,7 @@ impl UserProfile {
         // because we search towards likeness in accordance with the preferences of this user
         let preferece_embedding = embed::likeness_to_vector(self.preference_score);
 
-        let _combined = embed::combine_embeddings(
+        let combined = embed::combine_embeddings(
             &self.text_embedding,
             &self.interest_embeddings,
             &preferece_embedding,
@@ -203,7 +203,7 @@ impl UserProfile {
         let hnsw_read = hnsw.read()?;
 
         let filter = UserFilter { allowed_ids };
-        let search = hnsw_read.search_filter(&self.text_embedding, top_k * 5, 16, Some(&filter));
+        let search = hnsw_read.search_filter(&combined, top_k * 5, 16, Some(&filter));
 
         // Here we have the IDs of the candidates
         // let mut users = Vec::new();
@@ -249,10 +249,21 @@ impl UserProfile {
         Ok(users)
     }
 
-    // We can update the gender preference directly by updating it in
-    // rocksdb.
-    pub fn update_gender_preference(&mut self, _new_genders: Vec<u8>) -> Result<(), MatchError> {
-        todo!()
+    /// Update user preferences
+    /// This updates the user's preferences and persists them to the database.
+    pub fn update_preferences(
+        &mut self,
+        db: &Arc<DB>,
+        new_preferences: &Preferences,
+    ) -> Result<(), MatchError> {
+        self.preferences = new_preferences.clone();
+        self.update_last_seen();
+
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        Ok(())
     }
 
     /// Receive incoming swipe
@@ -260,6 +271,9 @@ impl UserProfile {
     /// so that changes are less impactful over time. Supports both likes and dislikes as
     /// indicated by the `positive` parameter.
     pub fn receive_incoming_swipe(&mut self, _positive: bool) -> Result<(), MatchError> {
+        // TODO: Update the likeness of the self user in addition with some constant
+        // while taking into account the number of updates so that the change
+        // is less impactful with the number of likeness updates
         todo!()
     }
 
@@ -275,8 +289,25 @@ impl UserProfile {
         _others_likeness: f32,
         _positive: bool,
     ) -> Result<(), MatchError> {
+        // Update last seen
+        self.update_last_seen();
+
+        // TODO: Update the preference score appropriately
         // Also register the swipe in rocksdb, so it automatically is excluded from future searches
         todo!()
+    }
+
+    /// Update last seen timestamp to current time
+    /// This updates the `last_seen` field in the user's metadata to the current
+    /// Unix timestamp. Note that this function only updates the field in memory;
+    /// saving to the database should be handled externally.
+    fn update_last_seen(&mut self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        self.meta.last_seen = now;
     }
 
     fn post_filter(&self, candidate: &UserProfile, strictness_level: u8) -> (bool, f32) {
