@@ -97,8 +97,6 @@ impl UserProfile {
         location: [f64; 2],
         preferences: Preferences,
         display_meta: DisplayMeta,
-        // raw_intersts: &[u32],
-        // raw_biography: &str,
     ) -> Result<Self, MatchError> {
         // 1. Calculate text embedding
         let (t_embed, i_embed) =
