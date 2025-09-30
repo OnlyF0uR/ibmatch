@@ -397,6 +397,20 @@ impl UserProfile {
             return (false, 0.0);
         }
 
+        // Now if the user has not been seen in the last 30 days we remove them
+        // from hnsw, same goes for if he is banned, and we return false
+        if candidate.meta.banned
+            || (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                - candidate.meta.last_seen)
+                > 2_592_000
+        {
+            // IDEA: Remove from HNSW?
+            return (false, 0.0);
+        }
+
         // TODO: Calculate score on which we shall sort later:
         // - multiplier
         // - likeness score
