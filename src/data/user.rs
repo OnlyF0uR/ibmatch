@@ -36,9 +36,8 @@ pub struct Preferences {
 /// Metadata for internal tracking
 #[derive(Debug, Encode, Decode)]
 pub struct Meta {
-    pub last_seen: u64,         // Unix timestamp
-    pub impressions_today: u32, // exposure count today
-    pub plan: u8,               // 0=free, 1=premium
+    pub last_seen: u64, // Unix timestamp
+    pub plan: u8,       // 0=free, 1=premium
     pub banned: bool,
 }
 
@@ -61,6 +60,7 @@ pub struct UserProfile {
     pub preferences: Preferences, // Matching preference / filters
     pub meta: Meta,
     pub multiplier: f32, // exposure / scoring multiplier, like boosters
+    pub multiplier_expiry: Option<u64>, // Unix timestamp when multiplier expires
 
     // Embeddings
     pub text_embedding: [f32; TEXT_EMB_DIM], // 50-d embedding for bio/interests
@@ -105,11 +105,11 @@ impl UserProfile {
             preferences,
             meta: Meta {
                 last_seen: now,
-                impressions_today: 0,
                 plan: 0,
                 banned: false,
             },
             multiplier: 1.0,
+            multiplier_expiry: None,
             text_embedding: t_embed,
             interest_embeddings: i_embed,
         };
@@ -411,8 +411,21 @@ impl UserProfile {
             return (false, 0.0);
         }
 
+        // let mut multiplier = candidate.multiplier;
+        // if let Some(expiry) = candidate.multiplier_expiry {
+        //     let now = std::time::SystemTime::now()
+        //         .duration_since(std::time::UNIX_EPOCH)
+        //         .unwrap_or_default()
+        //         .as_secs();
+        //     if now >= expiry {
+        //         multiplier = 1.0; // Consider multiplier to be 1.0 if expired
+        //     }
+        // }
+
         // TODO: Calculate score on which we shall sort later:
-        // - multiplier
+        // - multiplier (but only when not expired if multiplier_expiry is set)
+        //       in fact if multiplier_expiry is Some but it is expired then we consider multiplier to be 1.0
+        //       code above can be used to determine effective multiplier
         // - likeness score
         // - rating score
         // - distance (closer is better)
@@ -547,11 +560,11 @@ mod tests {
             },
             meta: Meta {
                 last_seen: 1_695_900_000,
-                impressions_today: 3,
                 plan: 1,
                 banned: false,
             },
             multiplier: 1.2,
+            multiplier_expiry: None,
             text_embedding: [0.1; TEXT_EMB_DIM],
             interest_embeddings: [0.2; INTEREST_EMB_DIM],
         };
@@ -585,10 +598,10 @@ mod tests {
             user.preferences.min_height_cm
         );
         assert_eq!(decoded.meta.last_seen, user.meta.last_seen);
-        assert_eq!(decoded.meta.impressions_today, user.meta.impressions_today);
         assert_eq!(decoded.meta.plan, user.meta.plan);
         assert_eq!(decoded.meta.banned, user.meta.banned);
         assert_eq!(decoded.multiplier, user.multiplier);
+        assert_eq!(decoded.multiplier_expiry, user.multiplier_expiry);
         assert_eq!(decoded.text_embedding, user.text_embedding);
         assert_eq!(decoded.interest_embeddings, user.interest_embeddings);
     }
@@ -614,11 +627,11 @@ mod tests {
             },
             meta: Meta {
                 last_seen: 1_700_000_000,
-                impressions_today: 0,
                 plan: 0,
                 banned: false,
             },
             multiplier: 0.8,
+            multiplier_expiry: None,
             text_embedding: [0.4; TEXT_EMB_DIM],
             interest_embeddings: [0.5; INTEREST_EMB_DIM],
         };
@@ -656,11 +669,11 @@ mod tests {
             },
             meta: Meta {
                 last_seen: 0,
-                impressions_today: 0,
                 plan: 0,
                 banned: true,
             },
             multiplier: 0.1,
+            multiplier_expiry: None,
             text_embedding: [0.0; TEXT_EMB_DIM],
             interest_embeddings: [0.0; INTEREST_EMB_DIM],
         };
@@ -693,11 +706,11 @@ mod tests {
             },
             meta: Meta {
                 last_seen: u64::MAX,
-                impressions_today: u32::MAX,
                 plan: 1,
                 banned: false,
             },
             multiplier: f32::MAX,
+            multiplier_expiry: Some(u64::MAX),
             text_embedding: [f32::MAX; TEXT_EMB_DIM],
             interest_embeddings: [f32::MIN; INTEREST_EMB_DIM],
         };
@@ -718,6 +731,7 @@ mod tests {
         assert_eq!(decoded.preferences.min_height_cm, u16::MAX);
         assert_eq!(decoded.meta.last_seen, u64::MAX);
         assert_eq!(decoded.multiplier, f32::MAX);
+        assert_eq!(decoded.multiplier_expiry, Some(u64::MAX));
         assert_eq!(decoded.text_embedding, user.text_embedding);
         assert_eq!(decoded.interest_embeddings, user.interest_embeddings);
     }
