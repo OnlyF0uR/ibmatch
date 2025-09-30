@@ -38,6 +38,18 @@ pub struct Preferences {
     pub min_height_cm: u16, // maximum height of a person
 }
 
+#[derive(Debug, Encode, Decode, Clone)]
+pub struct DisplayMeta {
+    pub name: String,
+    pub bio: String,
+    pub interests: Vec<u32>,          // Interest IDs
+    pub img_storage_ids: Vec<String>, // Storage IDs for user images
+    pub location_name: String,
+    pub looking_for: Option<u16>,
+    pub institution_name: Option<String>, // Name of the company or institution
+    pub institution_title: Option<String>, // Title or role at the institution
+}
+
 /// Metadata for internal tracking
 #[derive(Debug, Encode, Decode)]
 pub struct Meta {
@@ -54,9 +66,10 @@ pub struct UserProfile {
     pub gender: u8,     // Gender index (0=M, 1=F, 2=O)
     pub height_cm: u16, // Height in cm
 
-    pub likeness_score: f32,   // Overall likeness score (0.0 to 1.0)
-    pub preference_score: f32, // Overall preference score (0.0 to 1.0)
-    pub norm_rating: f32,      // normalized rating score (0.0 to 1.0)
+    pub likeness_score: f32,      // Overall likeness score (0.0 to 1.0)
+    pub preference_score: f32,    // Overall preference score (0.0 to 1.0)
+    pub norm_rating: f32,         // normalized rating score (0.0 to 1.0)
+    pub norm_rating_updates: u32, // Number of updates to normalized rating
 
     pub likeness_updates: u32,   // Number of updates to likeness score
     pub preference_updates: u32, // Number of updates to preference score
@@ -64,6 +77,7 @@ pub struct UserProfile {
     pub location: [f64; 2],       // lat/lon
     pub preferences: Preferences, // Matching preference / filters
     pub meta: Meta,
+    pub display_meta: DisplayMeta,
     pub multiplier: f32, // exposure / scoring multiplier, like boosters
     pub multiplier_expiry: Option<u64>, // Unix timestamp when multiplier expires
 
@@ -82,12 +96,13 @@ impl UserProfile {
         height_cm: u16,
         location: [f64; 2],
         preferences: Preferences,
-        raw_intersts: &[u32],
-        raw_biography: &str,
+        display_meta: DisplayMeta,
+        // raw_intersts: &[u32],
+        // raw_biography: &str,
     ) -> Result<Self, MatchError> {
         // 1. Calculate text embedding
         let (t_embed, i_embed) =
-            embed::calculate_persistent_embeddings(raw_intersts, raw_biography)?;
+            embed::calculate_persistent_embeddings(&display_meta.interests, &display_meta.bio)?;
 
         // Get current unix timestamp
         let now = std::time::SystemTime::now()
@@ -104,6 +119,7 @@ impl UserProfile {
             likeness_score: 0.5,   // Neutral initial likeness score
             preference_score: 0.5, // Neutral initial preference score
             norm_rating: 0.5,
+            norm_rating_updates: 0,
             likeness_updates: 0,
             preference_updates: 0,
             location,
@@ -113,6 +129,7 @@ impl UserProfile {
                 plan: 0,
                 banned: false,
             },
+            display_meta,
             multiplier: 1.0,
             multiplier_expiry: None,
             text_embedding: t_embed,
@@ -220,7 +237,7 @@ impl UserProfile {
         // Don't flood the results with people that liked us
         let max_liked_by = (top_k as f32 * 0.25).ceil() as usize;
         // These are the user ids that swiped us, without us swiping them
-        let liked_by = self.get_potential_matches(db, max_liked_by)?;
+        let liked_by = self.get_potential_matches(db, Some(max_liked_by))?;
         for n in &liked_by {
             let candidate = UserProfile::load_user(&db, *n)?;
 
@@ -269,6 +286,23 @@ impl UserProfile {
         users.truncate(top_k);
 
         Ok(users)
+    }
+
+    /// Update display metadata
+    /// This updates the user's display metadata and persists it to the database.
+    pub fn update_display_meta(
+        &mut self,
+        db: &Arc<DB>,
+        new_display_meta: &DisplayMeta,
+    ) -> Result<(), MatchError> {
+        self.display_meta = new_display_meta.clone();
+        self.update_last_seen();
+
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        Ok(())
     }
 
     /// Update user preferences
@@ -356,19 +390,41 @@ impl UserProfile {
         Ok(is_match)
     }
 
-    fn is_liked_by(&self, db: &Arc<DB>, other_user_id: u32) -> Result<bool, MatchError> {
-        // Because we have both user ids we can reconstruct the original swipe key
-        let swipe_key = format!("swipe:{}:{}", other_user_id, self.user_id);
-        let value = db.get(swipe_key.as_bytes())?;
-        if let Some(v) = value {
-            if let Ok(swipe_value) = std::str::from_utf8(&v) {
-                return Ok(swipe_value == "1");
-            }
-        }
-        Ok(false)
+    /// Process a new rating for the user
+    /// This updates the user's normalized rating based on a new rating input (1-10 scale).
+    /// It uses a simple moving average to update the normalized rating.
+    /// Takes into account the number of previous updates to weight the new rating appropriately.
+    pub fn apply_rating(&mut self, db: &Arc<DB>, new_rating: f32) -> Result<(), MatchError> {
+        let clamped_rating = new_rating.clamp(1.0, 10.0);
+        let normalized = normalize_rating(clamped_rating);
+
+        // Calculate weight factor based on number of previous updates
+        // More updates = less impact from new rating (stabilizes over time)
+        let weight_factor = 1.0 / (1.0 + self.norm_rating_updates as f32 * 0.1);
+
+        // Update normalized rating using weighted average
+        let change = (normalized - self.norm_rating) * weight_factor;
+        self.norm_rating = (self.norm_rating + change).clamp(0.0, 1.0);
+
+        // Increment the number of rating updates
+        self.norm_rating_updates += 1;
+
+        // Save updated user to database
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        Ok(())
     }
 
-    fn get_potential_matches(&self, db: &Arc<DB>, max_n: usize) -> Result<Vec<u32>, MatchError> {
+    /// Get potential matches
+    /// This function retrieves a list of user IDs who have swiped right (liked) the current user
+    /// but whom the current user has not yet swiped on.
+    pub fn get_potential_matches(
+        &self,
+        db: &Arc<DB>,
+        max_n: Option<usize>,
+    ) -> Result<Vec<u32>, MatchError> {
         let mut liked_by = Vec::new();
         let prefix = format!("swipe-in:{}:", self.user_id);
         let iter = db.prefix_iterator(prefix.as_bytes());
@@ -386,6 +442,8 @@ impl UserProfile {
                                 let already_swiped = self.is_liked_by(db, user_id)?;
                                 if swipe_value == "1" && !already_swiped {
                                     liked_by.push(user_id);
+
+                                    let max_n = max_n.unwrap_or(usize::MAX);
                                     if liked_by.len() >= max_n {
                                         break;
                                     }
@@ -398,6 +456,18 @@ impl UserProfile {
         }
 
         Ok(liked_by)
+    }
+
+    fn is_liked_by(&self, db: &Arc<DB>, other_user_id: u32) -> Result<bool, MatchError> {
+        // Because we have both user ids we can reconstruct the original swipe key
+        let swipe_key = format!("swipe:{}:{}", other_user_id, self.user_id);
+        let value = db.get(swipe_key.as_bytes())?;
+        if let Some(v) = value {
+            if let Ok(swipe_value) = std::str::from_utf8(&v) {
+                return Ok(swipe_value == "1");
+            }
+        }
+        Ok(false)
     }
 
     /// Update last seen timestamp to current time
@@ -533,16 +603,16 @@ impl UserProfile {
 
         Ok(decoded)
     }
+}
 
-    pub fn normalize_rating(mut rating: f32) -> f32 {
-        if rating < 1.0 {
-            rating = 1.0;
-        } else if rating > 10.0 {
-            rating = 10.0;
-        }
-
-        (rating as f32 - 1.0) / 9.0
+fn normalize_rating(mut rating: f32) -> f32 {
+    if rating < 1.0 {
+        rating = 1.0;
+    } else if rating > 10.0 {
+        rating = 10.0;
     }
+
+    (rating as f32 - 1.0) / 9.0
 }
 
 pub fn bulk_load(
@@ -618,6 +688,7 @@ mod tests {
             likeness_score: 0.5,
             preference_score: 0.5,
             norm_rating: 0.75,
+            norm_rating_updates: 3,
             likeness_updates: 1,
             preference_updates: 5,
             location: [52.3702, 4.895],
@@ -631,6 +702,16 @@ mod tests {
                 last_seen: 1_695_900_000,
                 plan: 1,
                 banned: false,
+            },
+            display_meta: DisplayMeta {
+                name: "Alice".to_string(),
+                bio: "Love hiking and outdoor adventures.".to_string(),
+                interests: vec![1, 2, 3],
+                img_storage_ids: vec!["img1".to_string(), "img2".to_string()],
+                location_name: "Amsterdam".to_string(),
+                looking_for: Some(1),
+                institution_name: Some("University of Amsterdam".to_string()),
+                institution_title: Some("Student".to_string()),
             },
             multiplier: 1.2,
             multiplier_expiry: None,
@@ -653,6 +734,7 @@ mod tests {
         assert_eq!(decoded.likeness_score, user.likeness_score);
         assert_eq!(decoded.preference_score, user.preference_score);
         assert_eq!(decoded.norm_rating, user.norm_rating);
+        assert_eq!(decoded.norm_rating_updates, user.norm_rating_updates);
         assert_eq!(decoded.likeness_updates, user.likeness_updates);
         assert_eq!(decoded.preference_updates, user.preference_updates);
         assert_eq!(decoded.location, user.location);
@@ -669,6 +751,29 @@ mod tests {
         assert_eq!(decoded.meta.last_seen, user.meta.last_seen);
         assert_eq!(decoded.meta.plan, user.meta.plan);
         assert_eq!(decoded.meta.banned, user.meta.banned);
+        assert_eq!(decoded.display_meta.name, user.display_meta.name);
+        assert_eq!(decoded.display_meta.bio, user.display_meta.bio);
+        assert_eq!(decoded.display_meta.interests, user.display_meta.interests);
+        assert_eq!(
+            decoded.display_meta.img_storage_ids,
+            user.display_meta.img_storage_ids
+        );
+        assert_eq!(
+            decoded.display_meta.location_name,
+            user.display_meta.location_name
+        );
+        assert_eq!(
+            decoded.display_meta.looking_for,
+            user.display_meta.looking_for
+        );
+        assert_eq!(
+            decoded.display_meta.institution_name,
+            user.display_meta.institution_name
+        );
+        assert_eq!(
+            decoded.display_meta.institution_title,
+            user.display_meta.institution_title
+        );
         assert_eq!(decoded.multiplier, user.multiplier);
         assert_eq!(decoded.multiplier_expiry, user.multiplier_expiry);
         assert_eq!(decoded.text_embedding, user.text_embedding);
@@ -685,6 +790,7 @@ mod tests {
             likeness_score: 0.5,
             preference_score: 0.5,
             norm_rating: 0.85,
+            norm_rating_updates: 5,
             likeness_updates: 2,
             preference_updates: 3,
             location: [40.7128, -74.0060],
@@ -698,6 +804,16 @@ mod tests {
                 last_seen: 1_700_000_000,
                 plan: 0,
                 banned: false,
+            },
+            display_meta: DisplayMeta {
+                name: "Bob".to_string(),
+                bio: "Tech enthusiast and foodie.".to_string(),
+                interests: vec![4, 5, 6],
+                img_storage_ids: vec!["img3".to_string(), "img4".to_string()],
+                location_name: "New York".to_string(),
+                looking_for: None,
+                institution_name: None,
+                institution_title: None,
             },
             multiplier: 0.8,
             multiplier_expiry: None,
@@ -713,6 +829,8 @@ mod tests {
         assert_eq!(decoded.preferences.gender, user.preferences.gender);
         assert_eq!(decoded.meta.plan, user.meta.plan);
         assert_eq!(decoded.meta.banned, user.meta.banned);
+        assert_eq!(decoded.display_meta.name, user.display_meta.name);
+        assert_eq!(decoded.display_meta.bio, user.display_meta.bio);
         assert_eq!(decoded.text_embedding, user.text_embedding);
         assert_eq!(decoded.interest_embeddings, user.interest_embeddings);
     }
@@ -727,6 +845,7 @@ mod tests {
             likeness_score: 0.5,
             preference_score: 0.5,
             norm_rating: 0.5,
+            norm_rating_updates: 0,
             likeness_updates: 0,
             preference_updates: 0,
             location: [0.0, 0.0],
@@ -740,6 +859,16 @@ mod tests {
                 last_seen: 0,
                 plan: 0,
                 banned: true,
+            },
+            display_meta: DisplayMeta {
+                name: "".to_string(),
+                bio: "".to_string(),
+                interests: vec![],
+                img_storage_ids: vec![],
+                location_name: "".to_string(),
+                looking_for: None,
+                institution_name: None,
+                institution_title: None,
             },
             multiplier: 0.1,
             multiplier_expiry: None,
@@ -764,6 +893,7 @@ mod tests {
             likeness_score: 1.0,
             preference_score: 0.0,
             norm_rating: 0.0, // Min normalized rating
+            norm_rating_updates: u32::MAX,
             likeness_updates: u32::MAX,
             preference_updates: u32::MAX,
             location: [-90.0, -180.0], // Min lat/lon
@@ -777,6 +907,16 @@ mod tests {
                 last_seen: u64::MAX,
                 plan: 1,
                 banned: false,
+            },
+            display_meta: DisplayMeta {
+                name: "".to_string(),
+                bio: "".to_string(),
+                interests: vec![],
+                img_storage_ids: vec![],
+                location_name: "".to_string(),
+                looking_for: None,
+                institution_name: None,
+                institution_title: None,
             },
             multiplier: f32::MAX,
             multiplier_expiry: Some(u64::MAX),
@@ -799,6 +939,16 @@ mod tests {
         assert_eq!(decoded.preferences.distance_km, u32::MAX);
         assert_eq!(decoded.preferences.min_height_cm, u16::MAX);
         assert_eq!(decoded.meta.last_seen, u64::MAX);
+        assert_eq!(decoded.meta.plan, 1);
+        assert_eq!(decoded.meta.banned, false);
+        assert_eq!(decoded.display_meta.name, "");
+        assert_eq!(decoded.display_meta.bio, "");
+        assert_eq!(decoded.display_meta.interests.len(), 0);
+        assert_eq!(decoded.display_meta.img_storage_ids.len(), 0);
+        assert_eq!(decoded.display_meta.location_name, "");
+        assert_eq!(decoded.display_meta.looking_for, None);
+        assert_eq!(decoded.display_meta.institution_name, None);
+        assert_eq!(decoded.display_meta.institution_title, None);
         assert_eq!(decoded.multiplier, f32::MAX);
         assert_eq!(decoded.multiplier_expiry, Some(u64::MAX));
         assert_eq!(decoded.text_embedding, user.text_embedding);
