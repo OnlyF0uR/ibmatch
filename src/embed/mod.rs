@@ -1,16 +1,15 @@
-use crate::{
-    embed::{interests::interests_to_vector, text::text_to_embedding},
-    errors::MatchError,
-};
+use crate::errors::MatchError;
 
 mod interests;
 mod likeness;
 mod text;
 
 pub use interests::INTEREST_EMB_DIM;
+pub use interests::interests_to_vector;
 use likeness::LIKENESS_EMB_DIM;
 pub use likeness::likeness_to_vector;
 pub use text::TEXT_EMB_DIM;
+pub use text::text_to_embedding;
 
 pub fn calculate_persistent_embeddings(
     raw_interests: &[u32],

@@ -63,8 +63,8 @@ pub struct Meta {
 pub struct UserProfile {
     pub user_id: u32,
     pub age: u8,
-    pub gender: u8,     // Gender index (0=M, 1=F, 2=O)
-    pub height_cm: u16, // Height in cm
+    pub gender: u8,             // Gender index (0=M, 1=F, 2=O)
+    pub height_cm: Option<u16>, // Height in cm
 
     pub likeness_score: f32,      // Overall likeness score (0.0 to 1.0)
     pub preference_score: f32,    // Overall preference score (0.0 to 1.0)
@@ -85,7 +85,7 @@ pub struct UserProfile {
 
     // Embeddings
     pub text_embedding: [f32; TEXT_EMB_DIM], // 50-d embedding for bio/interests
-    pub interest_embeddings: [f32; INTEREST_EMB_DIM],
+    pub interest_embeddings: [f32; INTEREST_EMB_DIM], // 16-d embedding for interests
 }
 
 impl UserProfile {
@@ -116,7 +116,7 @@ impl UserProfile {
             user_id,
             age,
             gender,
-            height_cm,
+            height_cm: Some(height_cm),
             likeness_score: 0.5,   // Neutral initial likeness score
             preference_score: 0.5, // Neutral initial preference score
             norm_rating: 0.5,
@@ -286,14 +286,108 @@ impl UserProfile {
         Ok(users)
     }
 
-    /// Update display metadata
-    /// This updates the user's display metadata and persists it to the database.
-    pub fn update_display_meta(
+    /// Update bio
+    pub fn update_bio(&mut self, db: &Arc<DB>, new_bio: &str) -> Result<(), MatchError> {
+        self.display_meta.bio = new_bio.to_string();
+        self.update_last_seen();
+
+        // Recalculate text embeddings
+        self.text_embedding = embed::text_to_embedding(new_bio);
+
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        Ok(())
+    }
+
+    /// Update (primary) interests
+    pub fn update_interests(
         &mut self,
         db: &Arc<DB>,
-        new_display_meta: &DisplayMeta,
+        new_interests: &[u32],
+        new_primary_interests: &[u32],
     ) -> Result<(), MatchError> {
-        self.display_meta = new_display_meta.clone();
+        let old_interests = self.display_meta.interests.clone();
+
+        self.display_meta.interests = new_interests.to_vec();
+        self.display_meta.primary_interests = new_primary_interests.to_vec();
+        self.update_last_seen();
+
+        // Recalculate interest embeddings, but only if interests changed, so not if only primary changed
+        if self.display_meta.interests != old_interests {
+            self.text_embedding = embed::text_to_embedding(&self.display_meta.bio);
+        }
+
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        Ok(())
+    }
+
+    /// Update images
+    pub fn update_images(
+        &mut self,
+        db: &Arc<DB>,
+        new_img_storage_ids: &[String],
+    ) -> Result<(), MatchError> {
+        self.display_meta.img_storage_ids = new_img_storage_ids.to_vec();
+        self.update_last_seen();
+
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        Ok(())
+    }
+
+    /// Update looking for
+    pub fn update_looking_for(
+        &mut self,
+        db: &Arc<DB>,
+        new_looking_for: Option<u16>,
+    ) -> Result<(), MatchError> {
+        self.display_meta.looking_for = new_looking_for;
+        self.update_last_seen();
+
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        Ok(())
+    }
+
+    /// Update institution
+    pub fn update_institution(
+        &mut self,
+        db: &Arc<DB>,
+        institution_name: Option<String>,
+        institution_title: Option<String>,
+    ) -> Result<(), MatchError> {
+        self.display_meta.institution_name = institution_name;
+        self.display_meta.institution_title = institution_title;
+        self.update_last_seen();
+
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        Ok(())
+    }
+
+    /// Update location
+    /// This updates the user's location and persists it to the database.
+    /// It also updates the last seen timestamp and the location_name in display metadata.
+    pub fn update_location(
+        &mut self,
+        db: &Arc<DB>,
+        latitude: f64,
+        longitude: f64,
+        location_name: String,
+    ) -> Result<(), MatchError> {
+        self.location = [latitude, longitude];
+        self.display_meta.location_name = location_name;
         self.update_last_seen();
 
         let key = format!("user:{}", self.user_id);
@@ -317,6 +411,17 @@ impl UserProfile {
         let value = self.encode()?;
         db.put(key.as_bytes(), &value)?;
 
+        Ok(())
+    }
+
+    /// Apply a ban to the user
+    /// This function bans the user, preventing them from appearing in searches.
+    pub fn apply_ban(&mut self, db: &Arc<DB>) -> Result<(), MatchError> {
+        self.meta.banned = true;
+
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
         Ok(())
     }
 
@@ -526,8 +631,11 @@ impl UserProfile {
         }
 
         // Ensure that the candidate is not smaller than min height
-        if candidate.height_cm < min_height {
-            return (false, 0.0);
+        // If the candidate has height info then we check against it
+        if let Some(h) = candidate.height_cm {
+            if h < min_height {
+                return (false, 0.0);
+            }
         }
 
         // Now if the user has not been seen in the last 30 days we remove them
@@ -674,7 +782,7 @@ mod tests {
             user_id: 1,
             age: 24,
             gender: 1,
-            height_cm: 190,
+            height_cm: Some(190),
             likeness_score: 0.5,
             preference_score: 0.5,
             norm_rating: 0.75,
@@ -779,7 +887,7 @@ mod tests {
             user_id: 1,
             age: 30,
             gender: 2,
-            height_cm: 175,
+            height_cm: Some(175),
             likeness_score: 0.5,
             preference_score: 0.5,
             norm_rating: 0.85,
@@ -833,7 +941,7 @@ mod tests {
             user_id: 1,
             age: 25,
             gender: 0,
-            height_cm: 180,
+            height_cm: Some(180),
             likeness_score: 0.5,
             preference_score: 0.5,
             norm_rating: 0.5,
@@ -879,9 +987,9 @@ mod tests {
     fn test_boundary_values() {
         let user = UserProfile {
             user_id: u32::MAX,
-            age: 255,            // Max u8
-            gender: 0,           // Empty string
-            height_cm: u16::MAX, // Max u16
+            age: 255,                  // Max u8
+            gender: 0,                 // Empty string
+            height_cm: Some(u16::MAX), // Max u16
             likeness_score: 1.0,
             preference_score: 0.0,
             norm_rating: 0.0, // Min normalized rating
@@ -922,7 +1030,7 @@ mod tests {
         assert_eq!(decoded.user_id, user.user_id);
         assert_eq!(decoded.age, 255);
         assert_eq!(decoded.gender, 0);
-        assert_eq!(decoded.height_cm, u16::MAX);
+        assert_eq!(decoded.height_cm, Some(u16::MAX));
         assert_eq!(decoded.likeness_score, 1.0);
         assert_eq!(decoded.preference_score, 0.0);
         assert_eq!(decoded.norm_rating, 0.0);
