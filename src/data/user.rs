@@ -13,6 +13,11 @@ use crate::{
 };
 use crate::{embed::TEXT_EMB_DIM, errors::MatchError};
 
+// Likeness, rating, distance
+const FILTER_LIKENESS_WEIGHT: f32 = 0.5;
+const FILTER_RATING_WEIGHT: f32 = 0.3;
+const FILTER_DISTANCE_WEIGHT: f32 = 0.2;
+
 /// Filter implementation for HNSW search
 struct UserFilter {
     allowed_ids: std::collections::HashSet<usize>,
@@ -414,6 +419,7 @@ impl UserProfile {
         let mut max_age = self.preferences.age_range[1];
         let mut max_distance = self.preferences.distance_km;
         let min_height = self.preferences.min_height_cm;
+        let distance = self.distance_in_km(candidate);
 
         if strictness_level == 0 {
             // Age range
@@ -421,7 +427,7 @@ impl UserProfile {
                 return (false, 0.0);
             }
 
-            if self.distance_in_km(candidate) > max_distance as f64 {
+            if distance > max_distance as f64 {
                 return (false, 0.0);
             }
         } else if strictness_level == 1 {
@@ -433,7 +439,7 @@ impl UserProfile {
             // Update max distance to be more lenient
             max_distance = (max_distance as f32 * 1.5) as u32;
 
-            if self.distance_in_km(candidate) > max_distance as f64 {
+            if distance > max_distance as f64 {
                 return (false, 0.0);
             }
         } else {
@@ -449,7 +455,7 @@ impl UserProfile {
             // Update max distance to be more lenient
             max_distance *= 2;
 
-            if self.distance_in_km(candidate) > max_distance as f64 {
+            if distance > max_distance as f64 {
                 return (false, 0.0);
             }
         }
@@ -473,26 +479,27 @@ impl UserProfile {
             return (false, 0.0);
         }
 
-        // let mut multiplier = candidate.multiplier;
-        // if let Some(expiry) = candidate.multiplier_expiry {
-        //     let now = std::time::SystemTime::now()
-        //         .duration_since(std::time::UNIX_EPOCH)
-        //         .unwrap_or_default()
-        //         .as_secs();
-        //     if now >= expiry {
-        //         multiplier = 1.0; // Consider multiplier to be 1.0 if expired
-        //     }
-        // }
+        let mut multiplier = candidate.multiplier;
+        if let Some(expiry) = candidate.multiplier_expiry {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if now >= expiry {
+                multiplier = 1.0; // Consider multiplier to be 1.0 if expired
+            }
+        }
 
-        // TODO: Calculate score on which we shall sort later:
-        // - multiplier (but only when not expired if multiplier_expiry is set)
-        //       in fact if multiplier_expiry is Some but it is expired then we consider multiplier to be 1.0
-        //       code above can be used to determine effective multiplier
-        // - likeness score
-        // - rating score
-        // - distance (closer is better)
+        let likeness = candidate.likeness_score;
+        let rating = candidate.norm_rating;
+        let closeness = (1.0 / (1.0 + distance)).clamp(0.0, 1.0) as f32;
 
-        (true, 0.0)
+        let score = (likeness * FILTER_LIKENESS_WEIGHT
+            + rating * FILTER_RATING_WEIGHT
+            + closeness * FILTER_DISTANCE_WEIGHT)
+            * multiplier;
+
+        (true, score)
     }
 
     fn distance_in_km(&self, other: &UserProfile) -> f64 {
