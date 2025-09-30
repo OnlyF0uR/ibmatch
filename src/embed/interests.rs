@@ -9,14 +9,12 @@ pub static INTEREST_EMBEDDINGS: Lazy<Vec<[f32; INTEREST_EMB_DIM]>> = Lazy::new(|
     (0..TOTAL_INTERESTS)
         .map(|_| {
             let mut v = [0.0; INTEREST_EMB_DIM];
-            for i in 0..INTEREST_EMB_DIM {
-                v[i] = rand::random::<f32>() - 0.5; // random in [-0.5,0.5]
-            }
+            v.iter_mut().for_each(|x| *x = rand::random::<f32>() - 0.5); // random in [-0.5,0.5]
+
             // normalize vector
-            let norm = (v.iter().map(|x| x * x).sum::<f32>()).sqrt();
-            for x in &mut v {
-                *x /= norm;
-            }
+            let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            v.iter_mut().for_each(|x| *x /= norm);
+
             v
         })
         .collect()

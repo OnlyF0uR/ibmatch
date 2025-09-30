@@ -17,7 +17,7 @@ pub fn calculate_persistent_embeddings(
     raw_biography: &str,
 ) -> Result<([f32; TEXT_EMB_DIM], [f32; INTEREST_EMB_DIM]), MatchError> {
     let text_embed = text_to_embedding(raw_biography);
-    let interest_embed = interests_to_vector(&raw_interests);
+    let interest_embed = interests_to_vector(raw_interests);
 
     Ok((text_embed, interest_embed))
 }

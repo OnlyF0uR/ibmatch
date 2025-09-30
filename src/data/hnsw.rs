@@ -5,7 +5,7 @@ use rocksdb::DB;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
-static USER_IDS_BY_GENDER: Lazy<DashMap<String, HashSet<usize>>> = Lazy::new(|| DashMap::new());
+static USER_IDS_BY_GENDER: Lazy<DashMap<String, HashSet<usize>>> = Lazy::new(DashMap::new);
 // static SWIPED_IDS: Lazy<DashMap<usize, HashSet<usize>>> = Lazy::new(|| DashMap::new());
 
 // Configure HNSW options
@@ -45,15 +45,15 @@ pub fn get_allowed_ids(db: &Arc<DB>, user_id: usize, pref_genders: &[u8]) -> Has
     let iter = db.prefix_iterator(swipe_prefix.as_bytes());
 
     for item in iter {
-        if let Ok((key, _)) = item {
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                // Parse swipe key format: "swipe:<user_id>:<swiped_user_id>"
-                let parts: Vec<&str> = key_str.split(':').collect();
-                if parts.len() == 3 {
-                    if let Ok(swiped_id) = parts[2].parse::<usize>() {
-                        allowed_ids.remove(&swiped_id);
-                    }
-                }
+        if let Ok((key, _)) = item
+            && let Ok(key_str) = std::str::from_utf8(&key)
+        {
+            // Parse swipe key format: "swipe:<user_id>:<swiped_user_id>"
+            let parts: Vec<&str> = key_str.split(':').collect();
+            if parts.len() == 3
+                && let Ok(swiped_id) = parts[2].parse::<usize>()
+            {
+                allowed_ids.remove(&swiped_id);
             }
         }
     }
@@ -69,7 +69,7 @@ pub fn add_user_to_gender(user_id: usize, gender: u8) {
     let gender_key = gender.to_string();
     USER_IDS_BY_GENDER
         .entry(gender_key)
-        .or_insert_with(HashSet::new)
+        .or_default()
         .insert(user_id);
 }
 

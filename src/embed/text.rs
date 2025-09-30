@@ -14,7 +14,7 @@ use crate::errors::MatchError;
 pub const TEXT_EMB_DIM: usize = 50;
 
 /// Global embeddings map using DashMap for concurrent access
-static GLOVE_EMBEDDINGS: Lazy<DashMap<String, [f32; TEXT_EMB_DIM]>> = Lazy::new(|| DashMap::new());
+static GLOVE_EMBEDDINGS: Lazy<DashMap<String, [f32; TEXT_EMB_DIM]>> = Lazy::new(DashMap::new);
 
 /// Initialize embeddings from a given path
 pub fn initialize_embeddings(path: impl Into<PathBuf>) -> Result<(), MatchError> {
@@ -39,12 +39,12 @@ pub fn initialize_embeddings(path: impl Into<PathBuf>) -> Result<(), MatchError>
             let mut iter = line.split_whitespace();
             if let Some(word) = iter.next() {
                 let vec_res: Result<Vec<f32>, _> = iter.map(|x| x.parse::<f32>()).collect();
-                if let Ok(vec) = vec_res {
-                    if vec.len() == TEXT_EMB_DIM {
-                        let mut arr = [0f32; TEXT_EMB_DIM];
-                        arr.copy_from_slice(&vec);
-                        map.insert(word.to_string(), arr);
-                    }
+                if let Ok(vec) = vec_res
+                    && vec.len() == TEXT_EMB_DIM
+                {
+                    let mut arr = [0f32; TEXT_EMB_DIM];
+                    arr.copy_from_slice(&vec);
+                    map.insert(word.to_string(), arr);
                 }
             }
         }
@@ -87,25 +87,22 @@ pub fn text_to_embedding(text: &str) -> [f32; TEXT_EMB_DIM] {
         .filter(|s| !s.is_empty())
     {
         if let Some(embed) = get_embedding(token) {
-            for i in 0..TEXT_EMB_DIM {
-                vec_sum[i] += embed[i];
-            }
+            vec_sum
+                .iter_mut()
+                .zip(embed.iter())
+                .for_each(|(v, &e)| *v += e);
             count += 1;
         }
     }
 
     if count > 0 {
-        for i in 0..TEXT_EMB_DIM {
-            vec_sum[i] /= count as f32;
-        }
+        vec_sum.iter_mut().for_each(|v| *v /= count as f32);
     }
 
     // Normalize
     let norm = vec_sum.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
-        for i in 0..TEXT_EMB_DIM {
-            vec_sum[i] /= norm;
-        }
+        vec_sum.iter_mut().for_each(|v| *v /= norm);
     }
 
     vec_sum

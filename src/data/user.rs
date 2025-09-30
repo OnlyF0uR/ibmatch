@@ -25,7 +25,7 @@ struct UserFilter {
 
 impl FilterT for UserFilter {
     fn hnsw_filter(&self, id: &hnsw_rs::prelude::DataId) -> bool {
-        self.allowed_ids.contains(&id)
+        self.allowed_ids.contains(id)
     }
 }
 
@@ -88,6 +88,7 @@ pub struct UserProfile {
 
 impl UserProfile {
     /// Function to create a new user (we shall infer embeddings)
+    #[allow(clippy::too_many_arguments)]
     pub fn create_new(
         db: &Arc<DB>,
         user_id: u32,
@@ -237,7 +238,7 @@ impl UserProfile {
         // These are the user ids that swiped us, without us swiping them
         let liked_by = self.get_potential_matches(db, Some(max_liked_by))?;
         for n in &liked_by {
-            let candidate = UserProfile::load_user(&db, *n)?;
+            let candidate = UserProfile::load_user(db, *n)?;
 
             let (passed, score) = self.post_filter(&candidate, 0);
             if passed {
@@ -246,7 +247,7 @@ impl UserProfile {
         }
 
         for n in &search {
-            let candidate = UserProfile::load_user(&db, n.d_id as u32)?;
+            let candidate = UserProfile::load_user(db, n.d_id as u32)?;
 
             let (passed, score) = self.post_filter(&candidate, 0);
             if passed {
@@ -257,7 +258,7 @@ impl UserProfile {
         // Now if users.len is smaller than top_k we must relax the filters
         if users.len() < top_k {
             for n in &search {
-                let candidate = UserProfile::load_user(&db, n.d_id as u32)?;
+                let candidate = UserProfile::load_user(db, n.d_id as u32)?;
 
                 let (passed, score) = self.post_filter(&candidate, 1);
                 if passed {
@@ -269,7 +270,7 @@ impl UserProfile {
         // If still not enough, relax even more
         if users.len() < top_k {
             for n in &search {
-                let candidate = UserProfile::load_user(&db, n.d_id as u32)?;
+                let candidate = UserProfile::load_user(db, n.d_id as u32)?;
 
                 let (passed, score) = self.post_filter(&candidate, 2);
                 if passed {
@@ -430,23 +431,21 @@ impl UserProfile {
         // Ensure that we do not collect more than needed
         for item in iter {
             let (key, value) = item?;
-            if let Ok(key_str) = std::str::from_utf8(&key) {
-                if key_str.starts_with(&prefix) {
-                    if let Some(id_str) = key_str.strip_prefix(&prefix) {
-                        if let Ok(user_id) = id_str.parse::<u32>() {
-                            // Check if the swipe was positive
-                            if let Ok(swipe_value) = std::str::from_utf8(&value) {
-                                // Also check we have not swiped them back already
-                                let already_swiped = self.is_liked_by(db, user_id)?;
-                                if swipe_value == "1" && !already_swiped {
-                                    liked_by.push(user_id);
+            if let Ok(key_str) = std::str::from_utf8(&key)
+                && key_str.starts_with(&prefix)
+                && let Some(id_str) = key_str.strip_prefix(&prefix)
+                && let Ok(user_id) = id_str.parse::<u32>()
+            {
+                // Check if the swipe was positive
+                if let Ok(swipe_value) = std::str::from_utf8(&value) {
+                    // Also check we have not swiped them back already
+                    let already_swiped = self.is_liked_by(db, user_id)?;
+                    if swipe_value == "1" && !already_swiped {
+                        liked_by.push(user_id);
 
-                                    let max_n = max_n.unwrap_or(usize::MAX);
-                                    if liked_by.len() >= max_n {
-                                        break;
-                                    }
-                                }
-                            }
+                        let max_n = max_n.unwrap_or(usize::MAX);
+                        if liked_by.len() >= max_n {
+                            break;
                         }
                     }
                 }
@@ -460,10 +459,10 @@ impl UserProfile {
         // Because we have both user ids we can reconstruct the original swipe key
         let swipe_key = format!("swipe:{}:{}", other_user_id, self.user_id);
         let value = db.get(swipe_key.as_bytes())?;
-        if let Some(v) = value {
-            if let Ok(swipe_value) = std::str::from_utf8(&v) {
-                return Ok(swipe_value == "1");
-            }
+        if let Some(v) = value
+            && let Ok(swipe_value) = std::str::from_utf8(&v)
+        {
+            return Ok(swipe_value == "1");
         }
         Ok(false)
     }
@@ -604,13 +603,8 @@ impl UserProfile {
 }
 
 fn normalize_rating(mut rating: f32) -> f32 {
-    if rating < 1.0 {
-        rating = 1.0;
-    } else if rating > 10.0 {
-        rating = 10.0;
-    }
-
-    (rating as f32 - 1.0) / 9.0
+    rating = rating.clamp(1.0, 10.0);
+    (rating - 1.0) / 9.0
 }
 
 pub fn bulk_load(
@@ -626,44 +620,43 @@ pub fn bulk_load(
         let (key, value) = item?;
 
         // Check if this is a user key (format: "user:{id}")
-        if let Ok(key_str) = std::str::from_utf8(&key) {
-            if key_str.starts_with("user:") {
-                // Extract user ID from key
-                if let Some(id_str) = key_str.strip_prefix("user:") {
-                    if let Ok(user_id) = id_str.parse::<usize>() {
-                        // Decode user profile
-                        let user_profile = UserProfile::decode(&value)?;
-                        // Only load users that are not banned and have been online within
-                        // the last 30 days (2592000 seconds)
-                        if user_profile.meta.banned
-                            || (std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs()
-                                - user_profile.meta.last_seen)
-                                > 2_592_000
-                        {
-                            continue;
-                        }
-
-                        let likeness_embedding =
-                            embed::likeness_to_vector(user_profile.likeness_score);
-                        let combined = embed::combine_embeddings(
-                            &user_profile.text_embedding,
-                            &user_profile.interest_embeddings,
-                            &likeness_embedding,
-                        )?;
-
-                        // Insert text embedding into HNSW index
-                        let hnsw_write = hnsw.write()?;
-                        hnsw_write.insert((&combined, user_id));
-
-                        // Add user to gender mapping
-                        hnsw::add_user_to_gender(user_id, user_profile.gender);
-
-                        loaded_count += 1;
-                    }
+        if let Ok(key_str) = std::str::from_utf8(&key)
+            && key_str.starts_with("user:")
+        {
+            // Extract user ID from key
+            if let Some(id_str) = key_str.strip_prefix("user:")
+                && let Ok(user_id) = id_str.parse::<usize>()
+            {
+                // Decode user profile
+                let user_profile = UserProfile::decode(&value)?;
+                // Only load users that are not banned and have been online within
+                // the last 30 days (2592000 seconds)
+                if user_profile.meta.banned
+                    || (std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs()
+                        - user_profile.meta.last_seen)
+                        > 2_592_000
+                {
+                    continue;
                 }
+
+                let likeness_embedding = embed::likeness_to_vector(user_profile.likeness_score);
+                let combined = embed::combine_embeddings(
+                    &user_profile.text_embedding,
+                    &user_profile.interest_embeddings,
+                    &likeness_embedding,
+                )?;
+
+                // Insert text embedding into HNSW index
+                let hnsw_write = hnsw.write()?;
+                hnsw_write.insert((&combined, user_id));
+
+                // Add user to gender mapping
+                hnsw::add_user_to_gender(user_id, user_profile.gender);
+
+                loaded_count += 1;
             }
         }
     }
@@ -938,7 +931,7 @@ mod tests {
         assert_eq!(decoded.preferences.min_height_cm, u16::MAX);
         assert_eq!(decoded.meta.last_seen, u64::MAX);
         assert_eq!(decoded.meta.plan, 1);
-        assert_eq!(decoded.meta.banned, false);
+        assert!(!decoded.meta.banned);
         assert_eq!(decoded.display_meta.name, "");
         assert_eq!(decoded.display_meta.bio, "");
         assert_eq!(decoded.display_meta.interests.len(), 0);
