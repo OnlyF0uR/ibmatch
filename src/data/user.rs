@@ -270,35 +270,68 @@ impl UserProfile {
         Ok(())
     }
 
-    /// Receive incoming swipe
-    /// This calculates a new likeness score. The total number of updates is taken into account,
-    /// so that changes are less impactful over time. Supports both likes and dislikes as
-    /// indicated by the `positive` parameter.
-    pub fn receive_incoming_swipe(&mut self, _positive: bool) -> Result<(), MatchError> {
-        // TODO: Update the likeness of the self user in addition with some constant
-        // while taking into account the number of updates so that the change
-        // is less impactful with the number of likeness updates
-        todo!()
-    }
-
-    /// Send outgoing swipe
-    /// This calculates a new preference score. This is to be executed upon a swipe by
-    /// the current user. Based on the likeness score of the liked/disliked user, we adjust
-    /// our own preference score. The total number of updates is taken into account,
-    /// so that changes are less impactful over time. Supports both likes and dislikes as
-    /// indicated by the `positive` parameter. This will also register a swipe to the db
-    /// so it is excluded from future searches.
-    pub fn send_outgoing_swipe(
+    /// Process a swipe between two users
+    /// This function updates both users: the current user's preference score and the target user's likeness score.
+    /// It also registers the swipe in the database to exclude the user from showing in future searches.
+    pub fn process_swipe(
         &mut self,
-        _others_likeness: f32,
-        _positive: bool,
+        db: &Arc<DB>,
+        target_user_id: u32,
+        positive: bool,
     ) -> Result<(), MatchError> {
-        // Update last seen
+        // Load the target user to get their likeness score and update it
+        let mut target_user = UserProfile::load_user(db, target_user_id)?;
+
+        // Update current user's preference score based on target's likeness
+        let impact_factor = 1.0 / (1.0 + self.preference_updates as f32 * 0.1);
+        let likeness_factor = if positive {
+            target_user.likeness_score // Positive swipe: move towards their likeness
+        } else {
+            1.0 - target_user.likeness_score // Negative swipe: move away from their likeness
+        };
+
+        let target_preference = likeness_factor;
+        let change = (target_preference - self.preference_score) * 0.1 * impact_factor;
+        self.preference_score = (self.preference_score + change).clamp(0.0, 1.0);
+        self.preference_updates += 1;
+
+        // Update target user's likeness score
+        let target_impact_factor = 1.0 / (1.0 + target_user.likeness_updates as f32 * 0.1);
+        let base_change = if positive { 0.1 } else { -0.05 };
+        let likeness_change = base_change * target_impact_factor;
+        target_user.likeness_score = (target_user.likeness_score + likeness_change).clamp(0.0, 1.0);
+        target_user.likeness_updates += 1;
+
+        // Update timestamp only for the active user (the one swiping)
         self.update_last_seen();
 
-        // TODO: Update the preference score appropriately
-        // Also register the swipe in rocksdb, so it automatically is excluded from future searches
-        todo!()
+        // Register the swipe in RocksDB (format: "swipe:<user_id>:<target_user_id>")
+        let swipe_key = format!("swipe:{}:{}", self.user_id, target_user_id);
+        let swipe_value = if positive { b"1" } else { b"0" };
+        db.put(swipe_key.as_bytes(), swipe_value)?;
+
+        // Save both users to database
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        let target_key = format!("user:{}", target_user_id);
+        let target_value = target_user.encode()?;
+        db.put(target_key.as_bytes(), &target_value)?;
+
+        // Update HNSW index for target user with new likeness embedding
+        let target_likeness_embedding = embed::likeness_to_vector(target_user.likeness_score);
+        let target_combined = embed::combine_embeddings(
+            &target_user.text_embedding,
+            &target_user.interest_embeddings,
+            &target_likeness_embedding,
+        )?;
+
+        let hnsw = hnsw::get_hnsw_index();
+        let hnsw_write = hnsw.write()?;
+        hnsw_write.insert((&target_combined, target_user_id as usize));
+
+        Ok(())
     }
 
     /// Update last seen timestamp to current time
@@ -366,6 +399,7 @@ impl UserProfile {
 
         // TODO: Calculate score on which we shall sort later:
         // - multiplier
+        // - likeness score
         // - rating score
         // - distance (closer is better)
         (true, 0.0)
