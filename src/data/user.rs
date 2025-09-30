@@ -215,7 +215,6 @@ impl UserProfile {
         let search = hnsw_read.search_filter(&combined, top_k * 5, 16, Some(&filter));
 
         // Here we have the IDs of the candidates
-        // let mut users = Vec::new();
         let mut users: Vec<(f32, UserProfile)> = Vec::with_capacity(search.len());
 
         // Don't flood the results with people that liked us
