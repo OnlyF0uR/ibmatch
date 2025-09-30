@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 
 use bincode::{
     Decode, Encode,
@@ -200,7 +200,6 @@ impl UserProfile {
         Ok(parsed)
     }
 
-    /// Search
     /// Search for potential matches based on the user's preferences and embeddings.
     /// This function performs a nearest neighbor search in the HNSW index,
     /// applies pre-filters, post-filters, and returns the top_k matches with their scores.
@@ -224,6 +223,10 @@ impl UserProfile {
         let allowed_ids =
             hnsw::get_allowed_ids(db, self.user_id as usize, &self.preferences.gender);
 
+        // IDEA: See if we have some users in cache still from previous top_k overfetches.
+        // that way we don't need to hit hnsw every time, if we still have some left over
+        // candidates from last time.
+
         let hnsw = hnsw::get_hnsw_index();
         let hnsw_read = hnsw.read()?;
 
@@ -232,6 +235,7 @@ impl UserProfile {
 
         // Here we have the IDs of the candidates
         let mut users: Vec<(f32, UserProfile)> = Vec::with_capacity(search.len());
+        let mut added_user_ids: HashSet<u32> = HashSet::with_capacity(search.len());
 
         // Don't flood the results with people that liked us
         let max_liked_by = (top_k as f32 * 0.25).ceil() as usize;
@@ -242,46 +246,40 @@ impl UserProfile {
 
             let (passed, score) = self.post_filter(&candidate, 0);
             if passed {
+                added_user_ids.insert(candidate.user_id);
                 users.push((score, candidate));
             }
         }
 
-        for n in &search {
-            let candidate = UserProfile::load_user(db, n.d_id as u32)?;
-
-            let (passed, score) = self.post_filter(&candidate, 0);
-            if passed {
-                users.push((score, candidate));
-            }
-        }
-
-        // Now if users.len is smaller than top_k we must relax the filters
-        if users.len() < top_k {
+        for level in 0..3 {
             for n in &search {
-                let candidate = UserProfile::load_user(db, n.d_id as u32)?;
+                let user_id = n.d_id as u32;
+                // Skip if already added
+                if added_user_ids.contains(&user_id) {
+                    continue;
+                }
 
-                let (passed, score) = self.post_filter(&candidate, 1);
+                let candidate = UserProfile::load_user(db, user_id)?;
+
+                let (passed, score) = self.post_filter(&candidate, level);
                 if passed {
+                    added_user_ids.insert(candidate.user_id);
                     users.push((score, candidate));
                 }
             }
-        }
 
-        // If still not enough, relax even more
-        if users.len() < top_k {
-            for n in &search {
-                let candidate = UserProfile::load_user(db, n.d_id as u32)?;
-
-                let (passed, score) = self.post_filter(&candidate, 2);
-                if passed {
-                    users.push((score, candidate));
-                }
+            // If we have enough users, we don't need to
+            // escalate to the next level
+            if users.len() >= top_k {
+                break;
             }
         }
 
         // Now we must sort on the users score
         users.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        // Finally truncate to top_k
+
+        // IDEA: Instead of truncating, we could add the remaining to the cache
+        // and serve from cache next time
         users.truncate(top_k);
 
         Ok(users)
