@@ -137,10 +137,22 @@ impl UserProfile {
         let key = format!("user:{}", user_id);
 
         let value = db.get(key.as_bytes())?;
-        let parsed = match value {
+        let mut parsed = match value {
             Some(v) => UserProfile::decode(&v)?,
             None => return Err(MatchError::UserNotFound),
         };
+
+        // Set active time
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        parsed.meta.last_seen = now;
+
+        // Also restore in DB
+        let value = parsed.encode()?;
+        db.put(key.as_bytes(), &value)?;
 
         // Combine the relevant embeddings
         let likeness_embedding = embed::likeness_to_vector(parsed.likeness_score);
@@ -278,6 +290,18 @@ pub fn bulk_load(
                     if let Ok(user_id) = id_str.parse::<usize>() {
                         // Decode user profile
                         let user_profile = UserProfile::decode(&value)?;
+                        // Only load users that are not banned and have been online within
+                        // the last 30 days (2592000 seconds)
+                        if user_profile.meta.banned
+                            || (std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs()
+                                - user_profile.meta.last_seen)
+                                > 2_592_000
+                        {
+                            continue;
+                        }
 
                         let likeness_embedding =
                             embed::likeness_to_vector(user_profile.likeness_score);
