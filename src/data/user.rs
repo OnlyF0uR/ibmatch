@@ -46,14 +46,21 @@ pub struct Meta {
 pub struct UserProfile {
     pub user_id: u32,
     pub age: u8,
-    pub gender: u8,               // Gender index (0=M, 1=F, 2=O)
+    pub gender: u8, // Gender index (0=M, 1=F, 2=O)
+
+    pub likeness_score: f32,   // Overall likeness score (0.0 to 1.0)
+    pub preference_score: f32, // Overall preference score (0.0 to 1.0)
+    pub norm_rating: f32,      // normalized rating score (0.0 to 1.0)
+
+    pub likeness_updates: u32,   // Number of updates to likeness score
+    pub preference_updates: u32, // Number of updates to preference score
+
     pub location: [f64; 2],       // lat/lon
     pub preferences: Preferences, // Matching preference / filters
     pub meta: Meta,
     pub multiplier: f32,                     // exposure / scoring multiplier
     pub text_embedding: [f32; TEXT_EMB_DIM], // 50-d embedding for bio/interests
     pub interest_embeddings: [f32; INTEREST_EMB_DIM],
-    pub norm_rating: f32, // normalized rating score (0.0 to 1.0)
 }
 
 impl UserProfile {
@@ -69,7 +76,8 @@ impl UserProfile {
         raw_biography: &str,
     ) -> Result<Self, MatchError> {
         // 1. Calculate text embedding
-        let (t_embed, i_embed) = embed::calculate_embeddings(raw_intersts, raw_biography)?;
+        let (t_embed, i_embed) =
+            embed::calculate_persistent_embeddings(raw_intersts, raw_biography)?;
 
         // Get current unix timestamp
         let now = std::time::SystemTime::now()
@@ -82,6 +90,11 @@ impl UserProfile {
             user_id,
             age,
             gender,
+            likeness_score: 0.5,   // Neutral initial likeness score
+            preference_score: 0.5, // Neutral initial preference score
+            norm_rating: 0.5,
+            likeness_updates: 0,
+            preference_updates: 0,
             location,
             preferences,
             meta: Meta {
@@ -93,11 +106,28 @@ impl UserProfile {
             multiplier: 1.0,
             text_embedding: t_embed,
             interest_embeddings: i_embed,
-            norm_rating: 0.5,
         };
 
         // 3. Store the user in the DB and HNSW
-        user.store_user(db)?;
+        let key = format!("user:{}", user.user_id);
+        let value = user.encode()?;
+
+        db.put(key.as_bytes(), &value)?;
+
+        let likeness_embedding = embed::likeness_to_vector(user.likeness_score);
+        let combined = embed::combine_embeddings(
+            &user.text_embedding,
+            &user.interest_embeddings,
+            &likeness_embedding,
+        )?;
+
+        // Add the user into the HNSW index
+        let hnsw = hnsw::get_hnsw_index();
+        let hnsw_write = hnsw.write()?;
+        hnsw_write.insert((&combined, user.user_id as usize));
+
+        // Add user to gender mapping
+        hnsw::add_user_to_gender(user.user_id as usize, user.gender);
 
         Ok(user)
     }
@@ -112,10 +142,18 @@ impl UserProfile {
             None => return Err(MatchError::UserNotFound),
         };
 
+        // Combine the relevant embeddings
+        let likeness_embedding = embed::likeness_to_vector(parsed.likeness_score);
+        let combined = embed::combine_embeddings(
+            &parsed.text_embedding,
+            &parsed.interest_embeddings,
+            &likeness_embedding,
+        )?;
+
         // Add to HNSW to maintain accurate representation (will override if already exists)
         let hnsw = hnsw::get_hnsw_index();
         let hnsw_write = hnsw.write()?;
-        hnsw_write.insert((&parsed.text_embedding, user_id as usize));
+        hnsw_write.insert((&combined, user_id as usize));
 
         // Add to gender mapping
         hnsw::add_user_to_gender(user_id as usize, parsed.gender);
@@ -125,13 +163,15 @@ impl UserProfile {
 
     /// Search
     pub fn search(&self, db: &Arc<DB>, top_k: usize) -> Result<Vec<UserProfile>, MatchError> {
-        // Now note that self is the user that is searching
-        // so we can filter based on preferences
-        // We can combine embeddings using embed::combine_embeddings
-        // And use those as a basis for the search
+        // It is vital that we substitute the likeness embedding with the preference embedding
+        // because we search towards likeness in accordance with the preferences of this user
+        let preferece_embedding = embed::likeness_to_vector(self.preference_score);
 
-        let _combined =
-            embed::combine_embeddings(&self.text_embedding, &self.interest_embeddings, (0.4, 0.5))?;
+        let _combined = embed::combine_embeddings(
+            &self.text_embedding,
+            &self.interest_embeddings,
+            &preferece_embedding,
+        )?;
 
         // Get the allowed gender ids
         // these are the ids of users of which we can prefilter on gender
@@ -143,8 +183,6 @@ impl UserProfile {
 
         let filter = UserFilter { allowed_ids };
         let search = hnsw_read.search_filter(&self.text_embedding, top_k * 5, 16, Some(&filter));
-
-        // Now lets post filter on age etc.
 
         // Here we have the IDs of the candidates
         let mut users = Vec::new();
@@ -158,34 +196,39 @@ impl UserProfile {
         Ok(users)
     }
 
+    // We can update the gender preference directly by updating it in
+    // rocksdb.
+    pub fn update_gender_preference(&mut self, _new_genders: Vec<u8>) -> Result<(), MatchError> {
+        todo!()
+    }
+
+    /// Update likeness score
+    /// This calculates a new likeness score. The total number of updates is taken into account,
+    /// so that changes are less impactful over time. Supports both likes and dislikes as
+    /// indicated by the `positive` parameter.
+    pub fn update_likeness_score(&mut self, _positive: bool) -> Result<(), MatchError> {
+        todo!()
+    }
+
+    /// Update preference score
+    /// This calculates a new preference score. This is to be executed upon a swipe by
+    /// the current user. Based on the likeness score of the liked/disliked user, we adjust
+    /// our own preference score. The total number of updates is taken into account,
+    /// so that changes are less impactful over time. Supports both likes and dislikes as
+    /// indicated by the `positive` parameter.
+    pub fn update_preference_score(
+        &mut self,
+        _others_likeness: f32,
+        _positive: bool,
+    ) -> Result<(), MatchError> {
+        todo!()
+    }
+
     fn post_filter(&self, _candidate: &UserProfile) -> bool {
         // TODO: implement filtering based on age range, distance, rating, plan, banned status etc.
 
         // Also handle recent swipes
         true
-    }
-
-    /// Store a user
-    fn store_user(&self, db: &Arc<DB>) -> Result<(), MatchError> {
-        let key = format!("user:{}", self.user_id);
-        let value = self.encode()?;
-
-        db.put(key.as_bytes(), &value)?;
-
-        // Add the user into the HNSW index
-        let hnsw = hnsw::get_hnsw_index();
-        let hnsw_write = hnsw.write()?;
-        hnsw_write.insert((&self.text_embedding, self.user_id as usize));
-
-        // Add user to gender mapping
-        hnsw::add_user_to_gender(self.user_id as usize, self.gender);
-
-        // And potentially in the dashmap for swipes
-        // but we would need to get who swiped this user
-        // in order to update that map
-        // so for now we let the post filter handle those cases
-
-        Ok(())
     }
 
     /// Encode the UserProfile to a byte vector using bincode
@@ -236,9 +279,17 @@ pub fn bulk_load(
                         // Decode user profile
                         let user_profile = UserProfile::decode(&value)?;
 
+                        let likeness_embedding =
+                            embed::likeness_to_vector(user_profile.likeness_score);
+                        let combined = embed::combine_embeddings(
+                            &user_profile.text_embedding,
+                            &user_profile.interest_embeddings,
+                            &likeness_embedding,
+                        )?;
+
                         // Insert text embedding into HNSW index
                         let hnsw_write = hnsw.write()?;
-                        hnsw_write.insert((&user_profile.text_embedding, user_id));
+                        hnsw_write.insert((&combined, user_id));
 
                         // Add user to gender mapping
                         hnsw::add_user_to_gender(user_id, user_profile.gender);
@@ -264,8 +315,12 @@ mod tests {
             user_id: 1,
             age: 24,
             gender: 1,
-            location: [52.3702, 4.895],
+            likeness_score: 0.5,
+            preference_score: 0.5,
             norm_rating: 0.75,
+            likeness_updates: 1,
+            preference_updates: 5,
+            location: [52.3702, 4.895],
             preferences: Preferences {
                 gender: vec![0],
                 age_range: [22, 28],
@@ -290,8 +345,14 @@ mod tests {
         let decoded = UserProfile::decode(&encoded).expect("Failed to decode user");
 
         // Verify all fields match
+        assert_eq!(decoded.user_id, user.user_id);
         assert_eq!(decoded.age, user.age);
         assert_eq!(decoded.gender, user.gender);
+        assert_eq!(decoded.likeness_score, user.likeness_score);
+        assert_eq!(decoded.preference_score, user.preference_score);
+        assert_eq!(decoded.norm_rating, user.norm_rating);
+        assert_eq!(decoded.likeness_updates, user.likeness_updates);
+        assert_eq!(decoded.preference_updates, user.preference_updates);
         assert_eq!(decoded.location, user.location);
         assert_eq!(decoded.preferences.gender, user.preferences.gender);
         assert_eq!(decoded.preferences.age_range, user.preferences.age_range);
@@ -314,8 +375,12 @@ mod tests {
             user_id: 1,
             age: 30,
             gender: 2,
-            location: [40.7128, -74.0060], // NYC coordinates
+            likeness_score: 0.5,
+            preference_score: 0.5,
             norm_rating: 0.85,
+            likeness_updates: 2,
+            preference_updates: 3,
+            location: [40.7128, -74.0060],
             preferences: Preferences {
                 gender: vec![0, 1, 2],
                 age_range: [18, 65],
@@ -340,6 +405,8 @@ mod tests {
         assert_eq!(decoded.preferences.gender, user.preferences.gender);
         assert_eq!(decoded.meta.plan, user.meta.plan);
         assert_eq!(decoded.meta.banned, user.meta.banned);
+        assert_eq!(decoded.text_embedding, user.text_embedding);
+        assert_eq!(decoded.interest_embeddings, user.interest_embeddings);
     }
 
     #[test]
@@ -348,10 +415,14 @@ mod tests {
             user_id: 1,
             age: 25,
             gender: 0,
-            location: [0.0, 0.0],
+            likeness_score: 0.5,
+            preference_score: 0.5,
             norm_rating: 0.5,
+            likeness_updates: 0,
+            preference_updates: 0,
+            location: [0.0, 0.0],
             preferences: Preferences {
-                gender: vec![], // Empty preferences
+                gender: vec![],
                 age_range: [18, 99],
                 distance_km: 1,
             },
@@ -377,10 +448,14 @@ mod tests {
     fn test_boundary_values() {
         let user = UserProfile {
             user_id: u32::MAX,
-            age: 255,                  // Max u8
-            gender: 0,                 // Empty string
+            age: 255,  // Max u8
+            gender: 0, // Empty string
+            likeness_score: 1.0,
+            preference_score: 0.0,
+            norm_rating: 0.0, // Min normalized rating
+            likeness_updates: u32::MAX,
+            preference_updates: u32::MAX,
             location: [-90.0, -180.0], // Min lat/lon
-            norm_rating: 0.0,          // Min normalized rating
             preferences: Preferences {
                 gender: vec![0],
                 age_range: [0, 255],   // Full u8 range
@@ -403,6 +478,11 @@ mod tests {
         assert_eq!(decoded.user_id, user.user_id);
         assert_eq!(decoded.age, 255);
         assert_eq!(decoded.gender, 0);
+        assert_eq!(decoded.likeness_score, 1.0);
+        assert_eq!(decoded.preference_score, 0.0);
+        assert_eq!(decoded.norm_rating, 0.0);
+        assert_eq!(decoded.likeness_updates, u32::MAX);
+        assert_eq!(decoded.preference_updates, u32::MAX);
         assert_eq!(decoded.preferences.distance_km, u32::MAX);
         assert_eq!(decoded.meta.last_seen, u64::MAX);
         assert_eq!(decoded.multiplier, f32::MAX);
