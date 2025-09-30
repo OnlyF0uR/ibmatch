@@ -58,7 +58,9 @@ pub struct UserProfile {
     pub location: [f64; 2],       // lat/lon
     pub preferences: Preferences, // Matching preference / filters
     pub meta: Meta,
-    pub multiplier: f32,                     // exposure / scoring multiplier
+    pub multiplier: f32, // exposure / scoring multiplier, like boosters
+
+    // Embeddings
     pub text_embedding: [f32; TEXT_EMB_DIM], // 50-d embedding for bio/interests
     pub interest_embeddings: [f32; INTEREST_EMB_DIM],
 }
@@ -174,7 +176,14 @@ impl UserProfile {
     }
 
     /// Search
-    pub fn search(&self, db: &Arc<DB>, top_k: usize) -> Result<Vec<UserProfile>, MatchError> {
+    /// Search for potential matches based on the user's preferences and embeddings.
+    /// This function performs a nearest neighbor search in the HNSW index,
+    /// applies pre-filters, post-filters, and returns the top_k matches with their scores.
+    pub fn search(
+        &self,
+        db: &Arc<DB>,
+        top_k: usize,
+    ) -> Result<Vec<(f32, UserProfile)>, MatchError> {
         // It is vital that we substitute the likeness embedding with the preference embedding
         // because we search towards likeness in accordance with the preferences of this user
         let preferece_embedding = embed::likeness_to_vector(self.preference_score);
@@ -197,13 +206,45 @@ impl UserProfile {
         let search = hnsw_read.search_filter(&self.text_embedding, top_k * 5, 16, Some(&filter));
 
         // Here we have the IDs of the candidates
-        let mut users = Vec::new();
-        for n in search {
+        // let mut users = Vec::new();
+        let mut users: Vec<(f32, UserProfile)> = Vec::with_capacity(search.len());
+        for n in &search {
             let candidate = UserProfile::load_user(&db, n.d_id as u32)?;
-            if self.post_filter(&candidate) {
-                users.push(candidate);
+
+            let (passed, score) = self.post_filter(&candidate, 0);
+            if passed {
+                users.push((score, candidate));
             }
         }
+
+        // Now if users.len is smaller than top_k we must relax the filters
+        if users.len() < top_k {
+            for n in &search {
+                let candidate = UserProfile::load_user(&db, n.d_id as u32)?;
+
+                let (passed, score) = self.post_filter(&candidate, 1);
+                if passed {
+                    users.push((score, candidate));
+                }
+            }
+        }
+
+        // If still not enough, relax even more
+        if users.len() < top_k {
+            for n in &search {
+                let candidate = UserProfile::load_user(&db, n.d_id as u32)?;
+
+                let (passed, score) = self.post_filter(&candidate, 2);
+                if passed {
+                    users.push((score, candidate));
+                }
+            }
+        }
+
+        // Now we must sort on the users score
+        users.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        // Finally truncate to top_k
+        users.truncate(top_k);
 
         Ok(users)
     }
@@ -214,33 +255,96 @@ impl UserProfile {
         todo!()
     }
 
-    /// Update likeness score
+    /// Receive incoming swipe
     /// This calculates a new likeness score. The total number of updates is taken into account,
     /// so that changes are less impactful over time. Supports both likes and dislikes as
     /// indicated by the `positive` parameter.
-    pub fn update_likeness_score(&mut self, _positive: bool) -> Result<(), MatchError> {
+    pub fn receive_incoming_swipe(&mut self, _positive: bool) -> Result<(), MatchError> {
         todo!()
     }
 
-    /// Update preference score
+    /// Send outgoing swipe
     /// This calculates a new preference score. This is to be executed upon a swipe by
     /// the current user. Based on the likeness score of the liked/disliked user, we adjust
     /// our own preference score. The total number of updates is taken into account,
     /// so that changes are less impactful over time. Supports both likes and dislikes as
-    /// indicated by the `positive` parameter.
-    pub fn update_preference_score(
+    /// indicated by the `positive` parameter. This will also register a swipe to the db
+    /// so it is excluded from future searches.
+    pub fn send_outgoing_swipe(
         &mut self,
         _others_likeness: f32,
         _positive: bool,
     ) -> Result<(), MatchError> {
+        // Also register the swipe in rocksdb, so it automatically is excluded from future searches
         todo!()
     }
 
-    fn post_filter(&self, _candidate: &UserProfile) -> bool {
-        // TODO: implement filtering based on age range, distance, rating, plan, banned status etc.
+    fn post_filter(&self, candidate: &UserProfile, strictness_level: u8) -> (bool, f32) {
+        let mut min_age = self.preferences.age_range[0];
+        let mut max_age = self.preferences.age_range[1];
+        let mut max_distance = self.preferences.distance_km;
 
-        // Also handle recent swipes
-        true
+        if strictness_level == 0 {
+            // Age range
+            if candidate.age < min_age || candidate.age > max_age {
+                return (false, 0.0);
+            }
+
+            if self.distance_in_km(candidate) > max_distance as f64 {
+                return (false, 0.0);
+            }
+        } else if strictness_level == 1 {
+            // Age range
+            if candidate.age < min_age || candidate.age > max_age {
+                return (false, 0.0);
+            }
+
+            // Update max distance to be more lenient
+            max_distance = (max_distance as f32 * 1.5) as u32;
+
+            if self.distance_in_km(candidate) > max_distance as f64 {
+                return (false, 0.0);
+            }
+        } else {
+            // Update age range to be more lenient
+            // Age range min of 18 max of 99, expand by 5 years on both sides
+            min_age = if min_age > 18 { min_age - 5 } else { 18 };
+            max_age = if max_age < 99 { max_age + 5 } else { 99 };
+
+            if candidate.age < min_age || candidate.age > max_age {
+                return (false, 0.0);
+            }
+
+            // Update max distance to be more lenient
+            max_distance *= 2;
+
+            if self.distance_in_km(candidate) > max_distance as f64 {
+                return (false, 0.0);
+            }
+        }
+
+        // TODO: Calculate score on which we shall sort later:
+        // - multiplier
+        // - rating score
+        // - distance (closer is better)
+        (true, 0.0)
+    }
+
+    fn distance_in_km(&self, other: &UserProfile) -> f64 {
+        let lat1 = self.location[0].to_radians();
+        let lon1 = self.location[1].to_radians();
+        let lat2 = other.location[0].to_radians();
+        let lon2 = other.location[1].to_radians();
+
+        let dlat = lat2 - lat1;
+        let dlon = lon2 - lon1;
+
+        let a = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon / 2.0).sin().powi(2);
+        let c = 2.0 * a.sqrt().asin();
+
+        // Earth's radius in kilometers
+        let earth_radius_km = 6371.0;
+        earth_radius_km * c
     }
 
     /// Encode the UserProfile to a byte vector using bincode
