@@ -212,6 +212,20 @@ impl UserProfile {
         // Here we have the IDs of the candidates
         // let mut users = Vec::new();
         let mut users: Vec<(f32, UserProfile)> = Vec::with_capacity(search.len());
+
+        // Don't flood the results with people that liked us
+        let max_liked_by = (top_k as f32 * 0.25).ceil() as usize;
+        // These are the user ids that swiped us, without us swiping them
+        let liked_by = self.get_potential_matches(db, max_liked_by)?;
+        for n in &liked_by {
+            let candidate = UserProfile::load_user(&db, *n)?;
+
+            let (passed, score) = self.post_filter(&candidate, 0);
+            if passed {
+                users.push((score, candidate));
+            }
+        }
+
         for n in &search {
             let candidate = UserProfile::load_user(&db, n.d_id as u32)?;
 
@@ -278,7 +292,7 @@ impl UserProfile {
         db: &Arc<DB>,
         target_user_id: u32,
         positive: bool,
-    ) -> Result<(), MatchError> {
+    ) -> Result<bool, MatchError> {
         // Load the target user to get their likeness score and update it
         let mut target_user = UserProfile::load_user(db, target_user_id)?;
 
@@ -305,10 +319,13 @@ impl UserProfile {
         // Update timestamp only for the active user (the one swiping)
         self.update_last_seen();
 
-        // Register the swipe in RocksDB (format: "swipe:<user_id>:<target_user_id>")
+        // Register the outgoing swipe in RocksDB (format: "swipe:<user_id>:<target_user_id>")
         let swipe_key = format!("swipe:{}:{}", self.user_id, target_user_id);
         let swipe_value = if positive { b"1" } else { b"0" };
         db.put(swipe_key.as_bytes(), swipe_value)?;
+        // This one is so we can iterate for matches quicker
+        let swipe_in_key = format!("swipe-in:{}:{}", target_user_id, self.user_id);
+        db.put(swipe_in_key.as_bytes(), swipe_value)?;
 
         // Save both users to database
         let key = format!("user:{}", self.user_id);
@@ -331,7 +348,52 @@ impl UserProfile {
         let hnsw_write = hnsw.write()?;
         hnsw_write.insert((&target_combined, target_user_id as usize));
 
-        Ok(())
+        let is_match = self.is_liked_by(db, target_user_id)?;
+        Ok(is_match)
+    }
+
+    fn is_liked_by(&self, db: &Arc<DB>, other_user_id: u32) -> Result<bool, MatchError> {
+        // Because we have both user ids we can reconstruct the original swipe key
+        let swipe_key = format!("swipe:{}:{}", other_user_id, self.user_id);
+        let value = db.get(swipe_key.as_bytes())?;
+        if let Some(v) = value {
+            if let Ok(swipe_value) = std::str::from_utf8(&v) {
+                return Ok(swipe_value == "1");
+            }
+        }
+        Ok(false)
+    }
+
+    fn get_potential_matches(&self, db: &Arc<DB>, max_n: usize) -> Result<Vec<u32>, MatchError> {
+        let mut liked_by = Vec::new();
+        let prefix = format!("swipe-in:{}:", self.user_id);
+        let iter = db.prefix_iterator(prefix.as_bytes());
+
+        // Ensure that we do not collect more than needed
+        for item in iter {
+            let (key, value) = item?;
+            if let Ok(key_str) = std::str::from_utf8(&key) {
+                if key_str.starts_with(&prefix) {
+                    if let Some(id_str) = key_str.strip_prefix(&prefix) {
+                        if let Ok(user_id) = id_str.parse::<u32>() {
+                            // Check if the swipe was positive
+                            if let Ok(swipe_value) = std::str::from_utf8(&value) {
+                                // Also check we have not swiped them back already
+                                let already_swiped = self.is_liked_by(db, user_id)?;
+                                if swipe_value == "1" && !already_swiped {
+                                    liked_by.push(user_id);
+                                    if liked_by.len() >= max_n {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(liked_by)
     }
 
     /// Update last seen timestamp to current time
@@ -429,6 +491,7 @@ impl UserProfile {
         // - likeness score
         // - rating score
         // - distance (closer is better)
+
         (true, 0.0)
     }
 
