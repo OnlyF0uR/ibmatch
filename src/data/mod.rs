@@ -9,6 +9,7 @@ pub use user::DisplayImage;
 pub use user::DisplayMeta;
 pub use user::Preferences;
 pub use user::UserProfile;
+pub use user::delete_user;
 pub use user::get_daily_swipe_statistics;
 
 pub fn initialize() -> Result<(), MatchError> {

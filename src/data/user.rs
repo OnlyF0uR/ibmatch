@@ -35,7 +35,7 @@ pub struct Preferences {
     pub gender: Vec<u8>, // Gender indeces the user is interested in (0=M, 1=F, 2=O)
     pub age_range: [u8; 2], // min and max age
     pub distance_km: u32, // maximum distance
-    pub min_height_cm: u16, // maximum height of a person
+    pub min_height_cm: u16, // minimum height of a person
 }
 
 #[derive(Debug, Encode, Decode, Clone)]
@@ -456,15 +456,6 @@ impl UserProfile {
         Ok(())
     }
 
-    /// Delete a user
-    /// This function removes the user from the database.
-    pub fn delete_user(&self, db: &Arc<DB>) -> Result<(), MatchError> {
-        let key = format!("user:{}", self.user_id);
-        db.delete(key.as_bytes())?;
-
-        Ok(())
-    }
-
     /// Set incognito mode
     /// This function sets the user's incognito mode status.
     pub fn set_incognito(&mut self, db: &Arc<DB>, incognito: bool) -> Result<(), MatchError> {
@@ -859,6 +850,15 @@ pub fn get_daily_swipe_statistics(
     }
 
     Ok(stats)
+}
+
+/// Delete a user
+/// This function removes the user from the database.
+pub fn delete_user(db: &Arc<DB>, user_id: u32) -> Result<(), MatchError> {
+    let key = format!("user:{}", user_id);
+    db.delete(key.as_bytes())?;
+
+    Ok(())
 }
 
 pub fn bulk_load(

@@ -9,6 +9,7 @@ pub use data::DisplayImage;
 pub use data::DisplayMeta;
 pub use data::Preferences;
 pub use data::UserProfile;
+pub use data::delete_user;
 pub use data::get_daily_swipe_statistics;
 pub use data::get_rocks_db;
 
