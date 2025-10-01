@@ -5,6 +5,7 @@ use bincode::{
     config::{self},
 };
 use hnsw_rs::hnsw::FilterT;
+use rand::Rng;
 use rocksdb::DB;
 
 use crate::{
@@ -64,10 +65,11 @@ pub struct Meta {
     pub last_seen: u64, // Unix timestamp
     pub banned: bool,
     pub incognito: bool,
-    pub swipe_streak: u32,         // Number of days with at least one swipe
-    pub longest_swipe_streak: u32, // Longest swipe streak ever achieved
-    pub last_swipe_day: u32,       // The last day (as days since epoch) the user swiped
-    pub plan: u8,                  // 0=free, 1=premium
+    pub swipe_streak: u32,          // Number of days with at least one swipe
+    pub longest_swipe_streak: u32,  // Longest swipe streak ever achieved
+    pub last_swipe_day: u32,        // The last day (as days since epoch) the user swiped
+    pub plan: u8,                   // 0=free, 1=premium
+    pub swipes_until_rankable: u32, // Number of swipes until user can be rated, 0 means ready for rating
 }
 
 /// Full user profile with multiplier for boosting
@@ -124,12 +126,16 @@ impl UserProfile {
             .unwrap_or_default()
             .as_secs();
 
+        // Generate initial random swipes_until_rankable between 10-50
+        let mut rng = rand::rng();
+        let swipes_until_rankable = rng.random_range(10..=50);
+
         // 2. Create user profile with default values
         let user = UserProfile {
             user_id,
             age,
             gender,
-            height_cm: height_cm,
+            height_cm,
             likeness_score: 0.5,   // Neutral initial likeness score
             preference_score: 0.5, // Neutral initial preference score
             norm_rating: 0.5,
@@ -146,6 +152,7 @@ impl UserProfile {
                 longest_swipe_streak: 0,
                 last_swipe_day: 0,
                 plan,
+                swipes_until_rankable,
             },
             display_meta,
             multiplier: 1.0,
@@ -554,6 +561,16 @@ impl UserProfile {
         let likeness_change = base_change * target_impact_factor;
         target_user.likeness_score = (target_user.likeness_score + likeness_change).clamp(0.0, 1.0);
         target_user.likeness_updates += 1;
+
+        // Update target user's swipes_until_rankable
+        if target_user.meta.swipes_until_rankable == 0 {
+            // Generate new random value between 10-50
+            let mut rng = rand::rng();
+            target_user.meta.swipes_until_rankable = rng.random_range(10..=50);
+        } else {
+            // Decrement the counter
+            target_user.meta.swipes_until_rankable -= 1;
+        }
 
         // Update timestamp only for the active user (the one swiping)
         self.update_last_seen();
@@ -1017,6 +1034,7 @@ mod tests {
                 longest_swipe_streak: 0,
                 last_swipe_day: 0,
                 plan: 0,
+                swipes_until_rankable: 25,
             },
             display_meta: DisplayMeta {
                 name: "Alice".to_string(),
@@ -1116,6 +1134,10 @@ mod tests {
         assert_eq!(decoded.multiplier_expiry, user.multiplier_expiry);
         assert_eq!(decoded.text_embedding, user.text_embedding);
         assert_eq!(decoded.interest_embeddings, user.interest_embeddings);
+        assert_eq!(
+            decoded.meta.swipes_until_rankable,
+            user.meta.swipes_until_rankable
+        );
     }
 
     #[test]
@@ -1146,6 +1168,7 @@ mod tests {
                 longest_swipe_streak: 0,
                 last_swipe_day: 0,
                 plan: 0,
+                swipes_until_rankable: 42,
             },
             display_meta: DisplayMeta {
                 name: "Bob".to_string(),
@@ -1209,6 +1232,7 @@ mod tests {
                 longest_swipe_streak: 0,
                 last_swipe_day: 0,
                 plan: 0,
+                swipes_until_rankable: 15,
             },
             display_meta: DisplayMeta {
                 name: "".to_string(),
@@ -1262,6 +1286,7 @@ mod tests {
                 longest_swipe_streak: 0,
                 last_swipe_day: 0,
                 plan: 0,
+                swipes_until_rankable: u32::MAX,
             },
             display_meta: DisplayMeta {
                 name: "".to_string(),
@@ -1314,6 +1339,7 @@ mod tests {
         assert_eq!(decoded.multiplier_expiry, Some(u64::MAX));
         assert_eq!(decoded.text_embedding, user.text_embedding);
         assert_eq!(decoded.interest_embeddings, user.interest_embeddings);
+        assert_eq!(decoded.meta.swipes_until_rankable, u32::MAX);
     }
 
     #[test]
