@@ -19,6 +19,8 @@ static GLOVE_EMBEDDINGS: Lazy<DashMap<String, [f32; TEXT_EMB_DIM]>> = Lazy::new(
 /// Initialize embeddings from a given path
 pub fn initialize_embeddings(path: impl Into<PathBuf>) -> Result<(), MatchError> {
     let path = path.into();
+    println!("Loading GloVe embeddings from {:?}", path);
+
     let bin_path = path.with_extension("bin");
 
     let map: HashMap<String, [f32; TEXT_EMB_DIM]> = if bin_path.exists() {
