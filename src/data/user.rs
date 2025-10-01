@@ -39,12 +39,19 @@ pub struct Preferences {
 }
 
 #[derive(Debug, Encode, Decode, Clone)]
+pub struct DisplayImage {
+    pub storage_id: String,
+    pub photo_index: u8, // 0 is primary
+    pub verified: bool,
+}
+
+#[derive(Debug, Encode, Decode, Clone)]
 pub struct DisplayMeta {
     pub name: String,
     pub bio: String,
-    pub interests: Vec<u32>,          // Interest IDs
-    pub primary_interests: Vec<u32>,  // Primary Interest IDs
-    pub img_storage_ids: Vec<String>, // Storage IDs for user images
+    pub interests: Vec<u32>,         // Interest IDs
+    pub primary_interests: Vec<u32>, // Primary Interest IDs
+    pub images: Vec<DisplayImage>,   // Storage IDs for user images
     pub location_name: String,
     pub looking_for: Option<u16>,
     pub institution_name: Option<String>, // Name of the company or institution
@@ -354,9 +361,9 @@ impl UserProfile {
     pub fn update_images(
         &mut self,
         db: &Arc<DB>,
-        new_img_storage_ids: &[String],
+        new_image_data: &[DisplayImage],
     ) -> Result<(), MatchError> {
-        self.display_meta.img_storage_ids = new_img_storage_ids.to_vec();
+        self.display_meta.images = new_image_data.to_vec();
         self.update_last_seen();
 
         let key = format!("user:{}", self.user_id);
@@ -875,7 +882,18 @@ mod tests {
                 bio: "Love hiking and outdoor adventures.".to_string(),
                 interests: vec![1, 2, 3],
                 primary_interests: vec![1, 3],
-                img_storage_ids: vec!["img1".to_string(), "img2".to_string()],
+                images: vec![
+                    DisplayImage {
+                        storage_id: "img1".to_string(),
+                        photo_index: 0,
+                        verified: true,
+                    },
+                    DisplayImage {
+                        storage_id: "img2".to_string(),
+                        photo_index: 1,
+                        verified: false,
+                    },
+                ],
                 location_name: "Amsterdam".to_string(),
                 looking_for: Some(1),
                 institution_name: Some("University of Amsterdam".to_string()),
@@ -929,8 +947,8 @@ mod tests {
             user.display_meta.primary_interests
         );
         assert_eq!(
-            decoded.display_meta.img_storage_ids,
-            user.display_meta.img_storage_ids
+            decoded.display_meta.images.len(),
+            user.display_meta.images.len()
         );
         assert_eq!(
             decoded.display_meta.location_name,
@@ -986,7 +1004,11 @@ mod tests {
                 bio: "Tech enthusiast and foodie.".to_string(),
                 interests: vec![4, 5, 6],
                 primary_interests: vec![5],
-                img_storage_ids: vec!["img3".to_string(), "img4".to_string()],
+                images: vec![DisplayImage {
+                    storage_id: "img3".to_string(),
+                    photo_index: 0,
+                    verified: true,
+                }],
                 location_name: "New York".to_string(),
                 looking_for: None,
                 institution_name: None,
@@ -1043,7 +1065,7 @@ mod tests {
                 bio: "".to_string(),
                 interests: vec![],
                 primary_interests: vec![],
-                img_storage_ids: vec![],
+                images: vec![],
                 location_name: "".to_string(),
                 looking_for: None,
                 institution_name: None,
@@ -1094,7 +1116,7 @@ mod tests {
                 bio: "".to_string(),
                 interests: vec![],
                 primary_interests: vec![],
-                img_storage_ids: vec![],
+                images: vec![],
                 location_name: "".to_string(),
                 looking_for: None,
                 institution_name: None,
@@ -1129,7 +1151,7 @@ mod tests {
         assert_eq!(decoded.display_meta.bio, "");
         assert_eq!(decoded.display_meta.interests.len(), 0);
         assert_eq!(decoded.display_meta.primary_interests.len(), 0);
-        assert_eq!(decoded.display_meta.img_storage_ids.len(), 0);
+        assert_eq!(decoded.display_meta.images.len(), 0);
         assert_eq!(decoded.display_meta.location_name, "");
         assert_eq!(decoded.display_meta.looking_for, None);
         assert_eq!(decoded.display_meta.institution_name, None);
