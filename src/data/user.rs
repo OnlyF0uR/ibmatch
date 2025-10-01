@@ -275,9 +275,9 @@ impl UserProfile {
         // Don't flood the results with people that liked us
         let max_liked_by = (top_k as f32 * 0.25).ceil() as usize;
         // These are the user ids that swiped us, without us swiping them
-        let liked_by = self.get_potential_matches(db, Some(max_liked_by))?;
-        for n in &liked_by {
-            let candidate = match UserProfile::load_user(db, *n) {
+        let liked_by = self.get_potential_matches(db, 0, max_liked_by)?;
+        for (user_id, _timestamp) in &liked_by {
+            let candidate = match UserProfile::load_user(db, *user_id) {
                 Ok(u) => u,
                 Err(e) => {
                     if matches!(e, MatchError::UserNotFound) {
@@ -336,6 +336,63 @@ impl UserProfile {
         users.truncate(top_k);
 
         Ok(users)
+    }
+
+    /// Get potential matches with pagination
+    /// This function retrieves a paginated list of user IDs and timestamps who have swiped right (liked) the current user
+    /// but whom the current user has not yet swiped on. Results are ordered by newest likes first.
+    ///
+    /// * `offset` - Number of results to skip (0 for first page)
+    /// * `chunk_size` - Number of results to return per page
+    ///   Returns a vector of tuples containing user IDs and the timestamp of when they liked the current user.
+    pub fn get_potential_matches(
+        &self,
+        db: &Arc<DB>,
+        offset: usize,
+        chunk_size: usize,
+    ) -> Result<Vec<(u32, u64)>, MatchError> {
+        let mut liked_by_with_timestamp = Vec::new();
+        let prefix = format!("swipe-in:{}:", self.user_id);
+        let iter = db.prefix_iterator(prefix.as_bytes());
+
+        // Collect all potential matches with their timestamps
+        for item in iter {
+            let (key, value) = item?;
+            if let Ok(key_str) = std::str::from_utf8(&key)
+                && key_str.starts_with(&prefix)
+                && let Some(id_str) = key_str.strip_prefix(&prefix)
+                && let Ok(user_id) = id_str.parse::<u32>()
+            {
+                // Parse the swipe value and timestamp (format: "1:1234567890" or "0:1234567890")
+                if let Ok(swipe_data) = std::str::from_utf8(&value) {
+                    let parts: Vec<&str> = swipe_data.split(':').collect();
+                    if parts.len() == 2 {
+                        let swipe_value = parts[0];
+                        let timestamp = parts[1].parse::<u64>().unwrap_or(0);
+
+                        // Also check we have not swiped them back already
+                        let already_swiped = self.is_liked_by(db, user_id)?;
+                        if swipe_value == "1" && !already_swiped {
+                            liked_by_with_timestamp.push((user_id, timestamp));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by timestamp (newest first)
+        liked_by_with_timestamp.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Apply pagination
+        let start_idx = offset * chunk_size;
+
+        let liked_by: Vec<(u32, u64)> = liked_by_with_timestamp
+            .into_iter()
+            .skip(start_idx)
+            .take(chunk_size)
+            .collect();
+
+        Ok(liked_by)
     }
 
     /// Update bio
@@ -608,13 +665,14 @@ impl UserProfile {
             self.meta.last_swipe_day = today_days;
         }
 
-        // Register the outgoing swipe in RocksDB (format: "swipe:<user_id>:<target_user_id>")
+        // Register the outgoing swipe in RocksDB with timestamp (format: "swipe:<user_id>:<target_user_id>")
         let swipe_key = format!("swipe:{}:{}", self.user_id, target_user_id);
-        let swipe_value = if positive { b"1" } else { b"0" };
-        db.put(swipe_key.as_bytes(), swipe_value)?;
+        let swipe_value = format!("{}:{}", if positive { "1" } else { "0" }, now);
+        db.put(swipe_key.as_bytes(), swipe_value.as_bytes())?;
+
         // This one is so we can iterate for matches quicker
         let swipe_in_key = format!("swipe-in:{}:{}", target_user_id, self.user_id);
-        db.put(swipe_in_key.as_bytes(), swipe_value)?;
+        db.put(swipe_in_key.as_bytes(), swipe_value.as_bytes())?;
 
         // Save both users to database
         let key = format!("user:{}", self.user_id);
@@ -640,8 +698,8 @@ impl UserProfile {
         let hnsw_write = hnsw.write()?;
         hnsw_write.insert((&target_combined, target_user_id as usize));
 
-        let is_match = self.is_liked_by(db, target_user_id)?;
-        Ok(is_match)
+        let liked_back = self.is_liked_by(db, target_user_id)?;
+        Ok(liked_back)
     }
 
     /// Process a new rating for the user
@@ -671,53 +729,19 @@ impl UserProfile {
         Ok(())
     }
 
-    /// Get potential matches
-    /// This function retrieves a list of user IDs who have swiped right (liked) the current user
-    /// but whom the current user has not yet swiped on.
-    pub fn get_potential_matches(
-        &self,
-        db: &Arc<DB>,
-        max_n: Option<usize>,
-    ) -> Result<Vec<u32>, MatchError> {
-        let mut liked_by = Vec::new();
-        let prefix = format!("swipe-in:{}:", self.user_id);
-        let iter = db.prefix_iterator(prefix.as_bytes());
-
-        // Ensure that we do not collect more than needed
-        for item in iter {
-            let (key, value) = item?;
-            if let Ok(key_str) = std::str::from_utf8(&key)
-                && key_str.starts_with(&prefix)
-                && let Some(id_str) = key_str.strip_prefix(&prefix)
-                && let Ok(user_id) = id_str.parse::<u32>()
-            {
-                // Check if the swipe was positive
-                if let Ok(swipe_value) = std::str::from_utf8(&value) {
-                    // Also check we have not swiped them back already
-                    let already_swiped = self.is_liked_by(db, user_id)?;
-                    if swipe_value == "1" && !already_swiped {
-                        liked_by.push(user_id);
-
-                        let max_n = max_n.unwrap_or(usize::MAX);
-                        if liked_by.len() >= max_n {
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(liked_by)
-    }
-
     fn is_liked_by(&self, db: &Arc<DB>, other_user_id: u32) -> Result<bool, MatchError> {
         // Because we have both user ids we can reconstruct the original swipe key
         let swipe_key = format!("swipe:{}:{}", other_user_id, self.user_id);
         let value = db.get(swipe_key.as_bytes())?;
         if let Some(v) = value
-            && let Ok(swipe_value) = std::str::from_utf8(&v)
+            && let Ok(swipe_data) = std::str::from_utf8(&v)
         {
-            return Ok(swipe_value == "1");
+            // Parse the swipe value and timestamp (format: "1:1234567890" or "0:1234567890")
+            let parts: Vec<&str> = swipe_data.split(':').collect();
+            if parts.len() == 2 {
+                let swipe_value = parts[0];
+                return Ok(swipe_value == "1");
+            }
         }
         Ok(false)
     }
