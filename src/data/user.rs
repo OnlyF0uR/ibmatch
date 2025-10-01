@@ -67,6 +67,7 @@ pub struct Meta {
     pub swipe_streak: u32,         // Number of days with at least one swipe
     pub longest_swipe_streak: u32, // Longest swipe streak ever achieved
     pub last_swipe_day: u32,       // The last day (as days since epoch) the user swiped
+    pub plan: u8,                  // 0=free, 1=premium
 }
 
 /// Full user profile with multiplier for boosting
@@ -109,6 +110,7 @@ impl UserProfile {
         gender: u8,
         height_cm: Option<u16>,
         location: [f64; 2],
+        plan: u8,
         preferences: Preferences,
         display_meta: DisplayMeta,
     ) -> Result<Self, MatchError> {
@@ -143,6 +145,7 @@ impl UserProfile {
                 swipe_streak: 0,
                 longest_swipe_streak: 0,
                 last_swipe_day: 0,
+                plan,
             },
             display_meta,
             multiplier: 1.0,
@@ -973,6 +976,7 @@ mod tests {
                 swipe_streak: 0,
                 longest_swipe_streak: 0,
                 last_swipe_day: 0,
+                plan: 0,
             },
             display_meta: DisplayMeta {
                 name: "Alice".to_string(),
@@ -1040,6 +1044,7 @@ mod tests {
             user.meta.longest_swipe_streak
         );
         assert_eq!(decoded.meta.last_swipe_day, user.meta.last_swipe_day);
+        assert_eq!(decoded.meta.plan, user.meta.plan);
         assert_eq!(decoded.display_meta.name, user.display_meta.name);
         assert_eq!(decoded.display_meta.bio, user.display_meta.bio);
         assert_eq!(decoded.display_meta.interests, user.display_meta.interests);
@@ -1100,6 +1105,7 @@ mod tests {
                 swipe_streak: 0,
                 longest_swipe_streak: 0,
                 last_swipe_day: 0,
+                plan: 0,
             },
             display_meta: DisplayMeta {
                 name: "Bob".to_string(),
@@ -1162,6 +1168,7 @@ mod tests {
                 swipe_streak: 0,
                 longest_swipe_streak: 0,
                 last_swipe_day: 0,
+                plan: 0,
             },
             display_meta: DisplayMeta {
                 name: "".to_string(),
@@ -1214,6 +1221,7 @@ mod tests {
                 swipe_streak: 0,
                 longest_swipe_streak: 0,
                 last_swipe_day: 0,
+                plan: 0,
             },
             display_meta: DisplayMeta {
                 name: "".to_string(),
@@ -1252,6 +1260,7 @@ mod tests {
         assert_eq!(decoded.meta.swipe_streak, 0);
         assert_eq!(decoded.meta.longest_swipe_streak, 0);
         assert_eq!(decoded.meta.last_swipe_day, 0);
+        assert_eq!(decoded.meta.plan, 0);
         assert_eq!(decoded.display_meta.name, "");
         assert_eq!(decoded.display_meta.bio, "");
         assert_eq!(decoded.display_meta.interests.len(), 0);
