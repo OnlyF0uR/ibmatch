@@ -243,7 +243,16 @@ impl UserProfile {
         // These are the user ids that swiped us, without us swiping them
         let liked_by = self.get_potential_matches(db, Some(max_liked_by))?;
         for n in &liked_by {
-            let candidate = UserProfile::load_user(db, *n)?;
+            let candidate = match UserProfile::load_user(db, *n) {
+                Ok(u) => u,
+                Err(e) => {
+                    if matches!(e, MatchError::UserNotFound) {
+                        continue;
+                    } else {
+                        return Err(e);
+                    }
+                } // Skip if user not found
+            };
 
             let (passed, score) = self.post_filter(&candidate, 0);
             if passed {
@@ -260,7 +269,16 @@ impl UserProfile {
                     continue;
                 }
 
-                let candidate = UserProfile::load_user(db, user_id)?;
+                let candidate = match UserProfile::load_user(db, user_id) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        if matches!(e, MatchError::UserNotFound) {
+                            continue;
+                        } else {
+                            return Err(e);
+                        }
+                    } // Skip if user not found
+                };
 
                 let (passed, score) = self.post_filter(&candidate, level);
                 if passed {
@@ -422,6 +440,15 @@ impl UserProfile {
         let key = format!("user:{}", self.user_id);
         let value = self.encode()?;
         db.put(key.as_bytes(), &value)?;
+        Ok(())
+    }
+
+    /// Delete a user
+    /// This function removes the user from the database.
+    pub fn delete_user(&self, db: &Arc<DB>) -> Result<(), MatchError> {
+        let key = format!("user:{}", self.user_id);
+        db.delete(key.as_bytes())?;
+
         Ok(())
     }
 

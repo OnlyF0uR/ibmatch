@@ -16,7 +16,7 @@ static DB_INSTANCE: Lazy<Arc<DB>> = Lazy::new(|| {
 });
 
 // Helper function to access the DB
-pub fn get_db() -> Arc<DB> {
+pub fn get_rocks_db() -> Arc<DB> {
     DB_INSTANCE.clone()
 }
 
