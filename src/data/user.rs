@@ -827,11 +827,11 @@ fn update_daily_swipe_statistic(db: &Arc<DB>, positive: bool) -> Result<(), Matc
 
 /// Get swipe statistics for the last `days` days
 /// This function retrieves the swipe statistics for the last `days` days.
-#[allow(clippy::type_complexity)]
+/// Returns Vec<(positive_count, negative_count)> where index 0 is today, index 1 is yesterday, etc.
 pub fn get_daily_swipe_statistics(
     db: &Arc<DB>,
     days_ago: u32,
-) -> Result<Vec<(u32, (u32, u32))>, MatchError> {
+) -> Result<Vec<(u32, u32)>, MatchError> {
     let mut stats = Vec::with_capacity(days_ago as usize);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -855,7 +855,7 @@ pub fn get_daily_swipe_statistics(
             None => (0, 0),
         };
 
-        stats.push((day_offset, (positive_count, negative_count)));
+        stats.push((positive_count, negative_count));
     }
 
     Ok(stats)
