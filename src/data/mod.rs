@@ -5,6 +5,9 @@ mod hnsw;
 mod user;
 
 pub use db::get_rocks_db;
+pub use user::DisplayImage;
+pub use user::DisplayMeta;
+pub use user::Preferences;
 pub use user::UserProfile;
 pub use user::get_daily_swipe_statistics;
 

@@ -106,7 +106,7 @@ impl UserProfile {
         user_id: u32,
         age: u8,
         gender: u8,
-        height_cm: u16,
+        height_cm: Option<u16>,
         location: [f64; 2],
         preferences: Preferences,
         display_meta: DisplayMeta,
@@ -126,7 +126,7 @@ impl UserProfile {
             user_id,
             age,
             gender,
-            height_cm: Some(height_cm),
+            height_cm: height_cm,
             likeness_score: 0.5,   // Neutral initial likeness score
             preference_score: 0.5, // Neutral initial preference score
             norm_rating: 0.5,
