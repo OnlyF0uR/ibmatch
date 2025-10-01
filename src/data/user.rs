@@ -64,8 +64,9 @@ pub struct Meta {
     pub last_seen: u64, // Unix timestamp
     pub banned: bool,
     pub incognito: bool,
-    pub swipe_streak: u32,   // Number of days with at least one swipe
-    pub last_swipe_day: u32, // The last day (as days since epoch) the user swiped
+    pub swipe_streak: u32,         // Number of days with at least one swipe
+    pub longest_swipe_streak: u32, // Longest swipe streak ever achieved
+    pub last_swipe_day: u32,       // The last day (as days since epoch) the user swiped
 }
 
 /// Full user profile with multiplier for boosting
@@ -140,6 +141,7 @@ impl UserProfile {
                 banned: false,
                 incognito: false,
                 swipe_streak: 0,
+                longest_swipe_streak: 0,
                 last_swipe_day: 0,
             },
             display_meta,
@@ -212,6 +214,15 @@ impl UserProfile {
         hnsw::add_user_to_gender(user_id as usize, parsed.gender);
 
         Ok(parsed)
+    }
+
+    pub fn has_swiped_today(&self) -> bool {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let today_days = (now / 86400) as u32; // days since epoch
+        self.meta.last_swipe_day == today_days
     }
 
     /// Search for potential matches based on the user's preferences and embeddings.
@@ -518,10 +529,22 @@ impl UserProfile {
         } else if self.meta.last_swipe_day == today_days - 1 {
             // Swiped yesterday, increment streak
             self.meta.swipe_streak += 1;
+
+            // Update longest streak if current streak is now longer
+            if self.meta.swipe_streak > self.meta.longest_swipe_streak {
+                self.meta.longest_swipe_streak = self.meta.swipe_streak;
+            }
+
             self.meta.last_swipe_day = today_days;
         } else {
             // No swipe yesterday, reset streak
             self.meta.swipe_streak = 1;
+
+            // Check if this single day streak should update longest (in case longest was 0)
+            if self.meta.swipe_streak > self.meta.longest_swipe_streak {
+                self.meta.longest_swipe_streak = self.meta.swipe_streak;
+            }
+
             self.meta.last_swipe_day = today_days;
         }
 
@@ -948,6 +971,7 @@ mod tests {
                 banned: false,
                 incognito: false,
                 swipe_streak: 0,
+                longest_swipe_streak: 0,
                 last_swipe_day: 0,
             },
             display_meta: DisplayMeta {
@@ -1011,6 +1035,10 @@ mod tests {
         assert_eq!(decoded.meta.banned, user.meta.banned);
         assert_eq!(decoded.meta.incognito, user.meta.incognito);
         assert_eq!(decoded.meta.swipe_streak, user.meta.swipe_streak);
+        assert_eq!(
+            decoded.meta.longest_swipe_streak,
+            user.meta.longest_swipe_streak
+        );
         assert_eq!(decoded.meta.last_swipe_day, user.meta.last_swipe_day);
         assert_eq!(decoded.display_meta.name, user.display_meta.name);
         assert_eq!(decoded.display_meta.bio, user.display_meta.bio);
@@ -1070,6 +1098,7 @@ mod tests {
                 banned: false,
                 incognito: false,
                 swipe_streak: 0,
+                longest_swipe_streak: 0,
                 last_swipe_day: 0,
             },
             display_meta: DisplayMeta {
@@ -1131,6 +1160,7 @@ mod tests {
                 banned: true,
                 incognito: false,
                 swipe_streak: 0,
+                longest_swipe_streak: 0,
                 last_swipe_day: 0,
             },
             display_meta: DisplayMeta {
@@ -1182,6 +1212,7 @@ mod tests {
                 banned: false,
                 incognito: false,
                 swipe_streak: 0,
+                longest_swipe_streak: 0,
                 last_swipe_day: 0,
             },
             display_meta: DisplayMeta {
@@ -1219,6 +1250,7 @@ mod tests {
         assert!(!decoded.meta.banned);
         assert!(!decoded.meta.incognito);
         assert_eq!(decoded.meta.swipe_streak, 0);
+        assert_eq!(decoded.meta.longest_swipe_streak, 0);
         assert_eq!(decoded.meta.last_swipe_day, 0);
         assert_eq!(decoded.display_meta.name, "");
         assert_eq!(decoded.display_meta.bio, "");
