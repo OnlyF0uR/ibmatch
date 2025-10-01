@@ -56,6 +56,9 @@ pub struct DisplayMeta {
 pub struct Meta {
     pub last_seen: u64, // Unix timestamp
     pub banned: bool,
+    pub incognito: bool,
+    pub swipe_streak: u32,   // Number of days with at least one swipe
+    pub last_swipe_day: u32, // The last day (as days since epoch) the user swiped
 }
 
 /// Full user profile with multiplier for boosting
@@ -128,6 +131,9 @@ impl UserProfile {
             meta: Meta {
                 last_seen: now,
                 banned: false,
+                incognito: false,
+                swipe_streak: 0,
+                last_swipe_day: 0,
             },
             display_meta,
             multiplier: 1.0,
@@ -452,6 +458,19 @@ impl UserProfile {
         Ok(())
     }
 
+    /// Set incognito mode
+    /// This function sets the user's incognito mode status.
+    pub fn set_incognito(&mut self, db: &Arc<DB>, incognito: bool) -> Result<(), MatchError> {
+        self.meta.incognito = incognito;
+        self.update_last_seen();
+
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        Ok(())
+    }
+
     /// Process a swipe between two users
     /// This function updates both users: the current user's preference score and the target user's likeness score.
     /// It also registers the swipe in the database to exclude the user from showing in future searches.
@@ -486,6 +505,27 @@ impl UserProfile {
 
         // Update timestamp only for the active user (the one swiping)
         self.update_last_seen();
+
+        // We must also update the swipe streak
+        // Now if there was already a swipe within 24 hours we do not increment
+        // if there was a swipe yesterday but not today we increment
+        // if there was no swipe yesterday we reset the streak
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let today_days = (now / 86400) as u32; // days since epoch
+        if self.meta.last_swipe_day == today_days {
+            // Already swiped today, do nothing
+        } else if self.meta.last_swipe_day == today_days - 1 {
+            // Swiped yesterday, increment streak
+            self.meta.swipe_streak += 1;
+            self.meta.last_swipe_day = today_days;
+        } else {
+            // No swipe yesterday, reset streak
+            self.meta.swipe_streak = 1;
+            self.meta.last_swipe_day = today_days;
+        }
 
         // Register the outgoing swipe in RocksDB (format: "swipe:<user_id>:<target_user_id>")
         let swipe_key = format!("swipe:{}:{}", self.user_id, target_user_id);
@@ -659,10 +699,10 @@ impl UserProfile {
 
         // Ensure that the candidate is not smaller than min height
         // If the candidate has height info then we check against it
-        if let Some(h) = candidate.height_cm {
-            if h < min_height {
-                return (false, 0.0);
-            }
+        if let Some(h) = candidate.height_cm
+            && h < min_height
+        {
+            return (false, 0.0);
         }
 
         // Now if the user has not been seen in the last 30 days we remove them
@@ -826,6 +866,9 @@ mod tests {
             meta: Meta {
                 last_seen: 1_695_900_000,
                 banned: false,
+                incognito: false,
+                swipe_streak: 0,
+                last_swipe_day: 0,
             },
             display_meta: DisplayMeta {
                 name: "Alice".to_string(),
@@ -875,6 +918,9 @@ mod tests {
         );
         assert_eq!(decoded.meta.last_seen, user.meta.last_seen);
         assert_eq!(decoded.meta.banned, user.meta.banned);
+        assert_eq!(decoded.meta.incognito, user.meta.incognito);
+        assert_eq!(decoded.meta.swipe_streak, user.meta.swipe_streak);
+        assert_eq!(decoded.meta.last_swipe_day, user.meta.last_swipe_day);
         assert_eq!(decoded.display_meta.name, user.display_meta.name);
         assert_eq!(decoded.display_meta.bio, user.display_meta.bio);
         assert_eq!(decoded.display_meta.interests, user.display_meta.interests);
@@ -931,6 +977,9 @@ mod tests {
             meta: Meta {
                 last_seen: 1_700_000_000,
                 banned: false,
+                incognito: false,
+                swipe_streak: 0,
+                last_swipe_day: 0,
             },
             display_meta: DisplayMeta {
                 name: "Bob".to_string(),
@@ -985,6 +1034,9 @@ mod tests {
             meta: Meta {
                 last_seen: 0,
                 banned: true,
+                incognito: false,
+                swipe_streak: 0,
+                last_swipe_day: 0,
             },
             display_meta: DisplayMeta {
                 name: "".to_string(),
@@ -1033,6 +1085,9 @@ mod tests {
             meta: Meta {
                 last_seen: u64::MAX,
                 banned: false,
+                incognito: false,
+                swipe_streak: 0,
+                last_swipe_day: 0,
             },
             display_meta: DisplayMeta {
                 name: "".to_string(),
@@ -1067,6 +1122,9 @@ mod tests {
         assert_eq!(decoded.preferences.min_height_cm, u16::MAX);
         assert_eq!(decoded.meta.last_seen, u64::MAX);
         assert!(!decoded.meta.banned);
+        assert!(!decoded.meta.incognito);
+        assert_eq!(decoded.meta.swipe_streak, 0);
+        assert_eq!(decoded.meta.last_swipe_day, 0);
         assert_eq!(decoded.display_meta.name, "");
         assert_eq!(decoded.display_meta.bio, "");
         assert_eq!(decoded.display_meta.interests.len(), 0);
