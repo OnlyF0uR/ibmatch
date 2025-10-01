@@ -275,7 +275,7 @@ impl UserProfile {
         // Don't flood the results with people that liked us
         let max_liked_by = (top_k as f32 * 0.25).ceil() as usize;
         // These are the user ids that swiped us, without us swiping them
-        let liked_by = self.get_potential_matches(db, 0, max_liked_by)?;
+        let (liked_by, _total_likes) = self.get_potential_matches(db, 0, max_liked_by)?;
         for (user_id, _timestamp) in &liked_by {
             let candidate = match UserProfile::load_user(db, *user_id) {
                 Ok(u) => u,
@@ -344,13 +344,13 @@ impl UserProfile {
     ///
     /// * `offset` - Number of results to skip (0 for first page)
     /// * `chunk_size` - Number of results to return per page
-    ///   Returns a vector of tuples containing user IDs and the timestamp of when they liked the current user.
+    /// Returns (Vec<(user_id, timestamp)>, total_count) where total_count is the total number of potential matches
     pub fn get_potential_matches(
         &self,
         db: &Arc<DB>,
         offset: usize,
         chunk_size: usize,
-    ) -> Result<Vec<(u32, u64)>, MatchError> {
+    ) -> Result<(Vec<(u32, u64)>, u64), MatchError> {
         let mut liked_by_with_timestamp = Vec::new();
         let prefix = format!("swipe-in:{}:", self.user_id);
         let iter = db.prefix_iterator(prefix.as_bytes());
@@ -380,6 +380,9 @@ impl UserProfile {
             }
         }
 
+        // Store total count before pagination
+        let total_count = liked_by_with_timestamp.len() as u64;
+
         // Sort by timestamp (newest first)
         liked_by_with_timestamp.sort_by(|a, b| b.1.cmp(&a.1));
 
@@ -392,7 +395,7 @@ impl UserProfile {
             .take(chunk_size)
             .collect();
 
-        Ok(liked_by)
+        Ok((liked_by, total_count))
     }
 
     /// Update bio
