@@ -262,15 +262,17 @@ impl UserProfile {
         // that way we don't need to hit hnsw every time, if we still have some left over
         // candidates from last time.
 
-        let hnsw = hnsw::get_hnsw_index();
-        let hnsw_read = hnsw.read()?;
-
-        let filter = UserFilter { allowed_ids };
-        let search = hnsw_read.search_filter(&combined, top_k * 5, 16, Some(&filter));
+        // Collect search results and then DROP the lock before calling load_user
+        let search_results = {
+            let hnsw = hnsw::get_hnsw_index();
+            let hnsw_read = hnsw.read()?;
+            let filter = UserFilter { allowed_ids };
+            hnsw_read.search_filter(&combined, top_k * 5, 16, Some(&filter))
+        }; // Read lock is dropped here!
 
         // Here we have the IDs of the candidates
-        let mut users: Vec<(f32, UserProfile)> = Vec::with_capacity(search.len());
-        let mut added_user_ids: HashSet<u32> = HashSet::with_capacity(search.len());
+        let mut users: Vec<(f32, UserProfile)> = Vec::with_capacity(search_results.len());
+        let mut added_user_ids: HashSet<u32> = HashSet::with_capacity(search_results.len());
 
         // Don't flood the results with people that liked us
         let max_liked_by = (top_k as f32 * 0.25).ceil() as usize;
@@ -296,7 +298,7 @@ impl UserProfile {
         }
 
         for level in 0..3 {
-            for n in &search {
+            for n in &search_results {
                 let user_id = n.d_id as u32;
                 // Skip if already added
                 if added_user_ids.contains(&user_id) {
