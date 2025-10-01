@@ -59,6 +59,8 @@ pub fn combine_embeddings(
 
 pub fn initialize() -> Result<(), MatchError> {
     // Initialize text embeddings
-    text::initialize_embeddings("data/glove.6B.50d.txt")?;
+    text::initialize_embeddings(
+        "embeddings/wiki_giga_2024_50_MFT20_vectors_seed_123_alpha_0.75_eta_0.075_combined.txt",
+    )?;
     Ok(())
 }
