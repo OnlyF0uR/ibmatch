@@ -371,6 +371,23 @@ impl UserProfile {
         Ok(())
     }
 
+    /// Update height
+    /// This updates the user's height and persists it to the database.
+    pub fn update_height(
+        &mut self,
+        db: &Arc<DB>,
+        new_height_cm: Option<u16>,
+    ) -> Result<(), MatchError> {
+        self.height_cm = new_height_cm;
+        self.update_last_seen();
+
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        Ok(())
+    }
+
     /// Update images
     pub fn update_images(
         &mut self,
