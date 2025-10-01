@@ -500,6 +500,29 @@ impl UserProfile {
         Ok(())
     }
 
+    /// Apply multiplier (booster)
+    /// This function applies a multiplier (booster) to the user's profile for increased exposure.
+    pub fn apply_multiplier(
+        &mut self,
+        db: &Arc<DB>,
+        multiplier: f32,
+        duration_secs: u64,
+    ) -> Result<(), MatchError> {
+        self.multiplier = multiplier;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.multiplier_expiry = Some(now + duration_secs);
+        self.update_last_seen();
+
+        let key = format!("user:{}", self.user_id);
+        let value = self.encode()?;
+        db.put(key.as_bytes(), &value)?;
+
+        Ok(())
+    }
+
     /// Process a swipe between two users
     /// This function updates both users: the current user's preference score and the target user's likeness score.
     /// It also registers the swipe in the database to exclude the user from showing in future searches.
