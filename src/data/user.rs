@@ -551,6 +551,9 @@ impl UserProfile {
         let target_value = target_user.encode()?;
         db.put(target_key.as_bytes(), &target_value)?;
 
+        // We also should update the daily likes statistics
+        update_daily_swipe_statistic(db, positive)?;
+
         // Update HNSW index for target user with new likeness embedding
         let target_likeness_embedding = embed::likeness_to_vector(target_user.likeness_score);
         let target_combined = embed::combine_embeddings(
@@ -786,6 +789,76 @@ impl UserProfile {
 fn normalize_rating(mut rating: f32) -> f32 {
     rating = rating.clamp(1.0, 10.0);
     (rating - 1.0) / 9.0
+}
+
+/// Update swipe statistic, which is for each day
+/// This function updates the global swipe statistics for all users.
+/// It increments the swipe count for the current day in the database.
+fn update_daily_swipe_statistic(db: &Arc<DB>, positive: bool) -> Result<(), MatchError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today_days = (now / 86400) as u32; // days since epoch
+
+    let stat_key = format!("stat:swipes:{}", today_days);
+    let (mut positive_count, mut negative_count) = match db.get(stat_key.as_bytes())? {
+        Some(v) => {
+            let count_str = std::str::from_utf8(&v).unwrap_or("0:0");
+            let parts: Vec<&str> = count_str.split(':').collect();
+            let pos = parts.first().unwrap_or(&"0").parse::<u32>().unwrap_or(0);
+            let neg = parts.get(1).unwrap_or(&"0").parse::<u32>().unwrap_or(0);
+            (pos, neg)
+        }
+        None => (0, 0),
+    };
+
+    if positive {
+        positive_count += 1;
+    } else {
+        negative_count += 1;
+    }
+
+    let new_value = format!("{}:{}", positive_count, negative_count);
+    db.put(stat_key.as_bytes(), new_value.as_bytes())?;
+
+    Ok(())
+}
+
+/// Get swipe statistics for the last `days` days
+/// This function retrieves the swipe statistics for the last `days` days.
+#[allow(clippy::type_complexity)]
+pub fn get_daily_swipe_statistics(
+    db: &Arc<DB>,
+    days_ago: u32,
+) -> Result<Vec<(u32, (u32, u32))>, MatchError> {
+    let mut stats = Vec::with_capacity(days_ago as usize);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let today_days = (now / 86400) as u32; // days since epoch
+
+    // Get the swipe statistics for each day from today back to days_ago
+    for day_offset in 0..days_ago {
+        let target_day = today_days - day_offset;
+        let stat_key = format!("stat:swipes:{}", target_day);
+
+        let (positive_count, negative_count) = match db.get(stat_key.as_bytes())? {
+            Some(v) => {
+                let count_str = std::str::from_utf8(&v).unwrap_or("0:0");
+                let parts: Vec<&str> = count_str.split(':').collect();
+                let pos = parts.first().unwrap_or(&"0").parse::<u32>().unwrap_or(0);
+                let neg = parts.get(1).unwrap_or(&"0").parse::<u32>().unwrap_or(0);
+                (pos, neg)
+            }
+            None => (0, 0),
+        };
+
+        stats.push((day_offset, (positive_count, negative_count)));
+    }
+
+    Ok(stats)
 }
 
 pub fn bulk_load(

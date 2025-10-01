@@ -6,6 +6,7 @@ pub mod errors;
 
 // Exports for external use
 pub use data::UserProfile;
+pub use data::get_daily_swipe_statistics;
 pub use data::get_rocks_db;
 
 pub fn initialize() -> Result<(), MatchError> {
