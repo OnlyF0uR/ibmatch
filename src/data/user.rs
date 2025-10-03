@@ -70,6 +70,7 @@ pub struct Meta {
     pub last_swipe_day: u32,        // The last day (as days since epoch) the user swiped
     pub plan: u8,                   // 0=free, 1=premium
     pub swipes_until_rateable: u32, // Number of swipes until user can be rated, 0 means ready for rating
+    pub is_demo_account: bool, // Is this a demo/test user (distance is not factored in, when they show up as candidates)
 }
 
 /// Full user profile with multiplier for boosting
@@ -113,6 +114,7 @@ impl UserProfile {
         height_cm: Option<u16>,
         location: [f64; 2],
         plan: u8,
+        is_demo_account: bool,
         preferences: Preferences,
         display_meta: DisplayMeta,
     ) -> Result<Self, MatchError> {
@@ -153,6 +155,7 @@ impl UserProfile {
                 last_swipe_day: 0,
                 plan,
                 swipes_until_rateable,
+                is_demo_account,
             },
             display_meta,
             multiplier: 1.0,
@@ -242,7 +245,6 @@ impl UserProfile {
         &self,
         db: &Arc<DB>,
         top_k: usize,
-        skip_distance_filter: bool, // Mostly for early testing purposes
     ) -> Result<Vec<(f32, UserProfile)>, MatchError> {
         // It is vital that we substitute the likeness embedding with the preference embedding
         // because we search towards likeness in accordance with the preferences of this user
@@ -291,7 +293,7 @@ impl UserProfile {
                 } // Skip if user not found
             };
 
-            let (passed, score) = self.post_filter(&candidate, 0, skip_distance_filter);
+            let (passed, score) = self.post_filter(&candidate, 0);
             if passed {
                 added_user_ids.insert(candidate.user_id);
                 users.push((score, candidate));
@@ -317,7 +319,7 @@ impl UserProfile {
                     } // Skip if user not found
                 };
 
-                let (passed, score) = self.post_filter(&candidate, level, skip_distance_filter);
+                let (passed, score) = self.post_filter(&candidate, level);
                 if passed {
                     added_user_ids.insert(candidate.user_id);
                     users.push((score, candidate));
@@ -765,28 +767,23 @@ impl UserProfile {
         self.meta.last_seen = now;
     }
 
-    fn post_filter(
-        &self,
-        candidate: &UserProfile,
-        strictness_level: u8,
-        skip_distance_filter: bool,
-    ) -> (bool, f32) {
+    fn post_filter(&self, candidate: &UserProfile, strictness_level: u8) -> (bool, f32) {
         let mut min_age = self.preferences.age_range[0];
         let mut max_age = self.preferences.age_range[1];
         let mut max_distance = self.preferences.distance_km;
         let min_height = self.preferences.min_height_cm;
         let distance = self.distance_in_km(candidate);
 
-        if strictness_level == 0 {
+        if strictness_level == 0 && !candidate.meta.is_demo_account {
             // Age range
             if candidate.age < min_age || candidate.age > max_age {
                 return (false, 0.0);
             }
 
-            if distance > max_distance as f64 && !skip_distance_filter {
+            if distance > max_distance as f64 {
                 return (false, 0.0);
             }
-        } else if strictness_level == 1 {
+        } else if strictness_level == 1 && !candidate.meta.is_demo_account {
             // Age range
             if candidate.age < min_age || candidate.age > max_age {
                 return (false, 0.0);
@@ -795,10 +792,10 @@ impl UserProfile {
             // Update max distance to be more lenient
             max_distance = (max_distance as f32 * 1.5) as u32;
 
-            if distance > max_distance as f64 && !skip_distance_filter {
+            if distance > max_distance as f64 {
                 return (false, 0.0);
             }
-        } else {
+        } else if !candidate.meta.is_demo_account {
             // Update age range to be more lenient
             // Age range min of 18 max of 99, expand by 5 years on both sides
             min_age = if min_age > 18 { min_age - 5 } else { 18 };
@@ -811,7 +808,7 @@ impl UserProfile {
             // Update max distance to be more lenient
             max_distance *= 2;
 
-            if distance > max_distance as f64 && !skip_distance_filter {
+            if distance > max_distance as f64 {
                 return (false, 0.0);
             }
         }
@@ -820,6 +817,7 @@ impl UserProfile {
         // If the candidate has height info then we check against it
         if let Some(h) = candidate.height_cm
             && h < min_height
+            && !candidate.meta.is_demo_account
         {
             return (false, 0.0);
         }
@@ -1070,6 +1068,7 @@ mod tests {
                 last_swipe_day: 0,
                 plan: 0,
                 swipes_until_rateable: 25,
+                is_demo_account: false,
             },
             display_meta: DisplayMeta {
                 name: "Alice".to_string(),
@@ -1204,6 +1203,7 @@ mod tests {
                 last_swipe_day: 0,
                 plan: 0,
                 swipes_until_rateable: 42,
+                is_demo_account: false,
             },
             display_meta: DisplayMeta {
                 name: "Bob".to_string(),
@@ -1268,6 +1268,7 @@ mod tests {
                 last_swipe_day: 0,
                 plan: 0,
                 swipes_until_rateable: 15,
+                is_demo_account: false,
             },
             display_meta: DisplayMeta {
                 name: "".to_string(),
@@ -1322,6 +1323,7 @@ mod tests {
                 last_swipe_day: 0,
                 plan: 0,
                 swipes_until_rateable: u32::MAX,
+                is_demo_account: false,
             },
             display_meta: DisplayMeta {
                 name: "".to_string(),
