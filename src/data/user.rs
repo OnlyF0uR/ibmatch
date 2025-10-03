@@ -18,6 +18,7 @@ use crate::{embed::TEXT_EMB_DIM, errors::MatchError};
 const FILTER_LIKENESS_WEIGHT: f32 = 0.5;
 const FILTER_RATING_WEIGHT: f32 = 0.3;
 const FILTER_DISTANCE_WEIGHT: f32 = 0.2;
+const FILTER_INTEREST_OVERLAP_WEIGHT: f32 = 0.08;
 
 /// Filter implementation for HNSW search
 struct UserFilter {
@@ -851,9 +852,24 @@ impl UserProfile {
         let rating = candidate.norm_rating;
         let closeness = (1.0 / (1.0 + distance)).clamp(0.0, 1.0) as f32;
 
+        // Calculate interest overlap using Jaccard similarity
+        let self_interests: HashSet<u32> = self.display_meta.interests.iter().copied().collect();
+        let candidate_interests: HashSet<u32> =
+            candidate.display_meta.interests.iter().copied().collect();
+
+        let intersection = self_interests.intersection(&candidate_interests).count();
+        let union = self_interests.union(&candidate_interests).count();
+
+        let interest_overlap = if union > 0 {
+            intersection as f32 / union as f32
+        } else {
+            0.0
+        };
+
         let score = (likeness * FILTER_LIKENESS_WEIGHT
             + rating * FILTER_RATING_WEIGHT
-            + closeness * FILTER_DISTANCE_WEIGHT)
+            + closeness * FILTER_DISTANCE_WEIGHT
+            + interest_overlap * FILTER_INTEREST_OVERLAP_WEIGHT)
             * multiplier;
 
         (true, score)
