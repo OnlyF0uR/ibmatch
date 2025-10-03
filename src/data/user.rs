@@ -280,8 +280,9 @@ impl UserProfile {
 
         // Don't flood the results with people that liked us
         let max_liked_by = (top_k as f32 * 0.25).ceil() as usize;
+
         // These are the user ids that swiped us, without us swiping them
-        let (liked_by, _total_likes) = self.get_potential_matches(db, 0, max_liked_by)?;
+        let (liked_by, _total_likes) = self.get_likes(db, 0, max_liked_by, false)?;
         for (user_id, _timestamp) in &liked_by {
             let candidate = match UserProfile::load_user(db, *user_id) {
                 Ok(u) => u,
@@ -350,12 +351,14 @@ impl UserProfile {
     ///
     /// * `offset` - Number of results to skip (0 for first page)
     /// * `chunk_size` - Number of results to return per page
+    /// * `include_already_swiped` - If true, include users that the current user has already swiped on
     /// Returns (Vec<(user_id, timestamp)>, total_count) where total_count is the total number of potential matches
-    pub fn get_potential_matches(
+    pub fn get_likes(
         &self,
         db: &Arc<DB>,
         offset: usize,
         chunk_size: usize,
+        include_already_swiped: bool,
     ) -> Result<(Vec<(u32, u64)>, u64), MatchError> {
         let mut liked_by_with_timestamp = Vec::new();
         let prefix = format!("swipe-in:{}:", self.user_id);
@@ -376,9 +379,18 @@ impl UserProfile {
                         let swipe_value = parts[0];
                         let timestamp = parts[1].parse::<u64>().unwrap_or(0);
 
-                        // Also check we have not swiped them back already
-                        let already_swiped = self.is_liked_by(db, user_id)?;
-                        if swipe_value == "1" && !already_swiped {
+                        // Only if they liked us
+                        if swipe_value == "1" {
+                            if !include_already_swiped {
+                                // Now if we do not want to include everybody
+                                // we must filter out those we already swiped on
+                                // whether that was a like or a dislike
+                                let already_swiped = self.is_swiped_by(db, user_id)?;
+                                if already_swiped {
+                                    continue;
+                                }
+                            }
+
                             liked_by_with_timestamp.push((user_id, timestamp));
                         }
                     }
@@ -753,6 +765,13 @@ impl UserProfile {
             }
         }
         Ok(false)
+    }
+
+    fn is_swiped_by(&self, db: &Arc<DB>, other_user_id: u32) -> Result<bool, MatchError> {
+        // Because we have both user ids we can reconstruct the original swipe key
+        let swipe_key = format!("swipe:{}:{}", other_user_id, self.user_id);
+        let value = db.get(swipe_key.as_bytes())?;
+        Ok(value.is_some())
     }
 
     /// Update last seen timestamp to current time
