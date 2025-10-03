@@ -551,8 +551,8 @@ impl UserProfile {
 
     /// Apply a ban to the user
     /// This function bans the user, preventing them from appearing in searches.
-    pub fn apply_ban(&mut self, db: &Arc<DB>) -> Result<(), MatchError> {
-        self.meta.banned = true;
+    pub fn apply_ban(&mut self, db: &Arc<DB>, positive: bool) -> Result<(), MatchError> {
+        self.meta.banned = positive;
 
         let key = format!("user:{}", self.user_id);
         let value = self.encode()?;
