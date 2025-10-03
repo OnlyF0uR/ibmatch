@@ -242,6 +242,7 @@ impl UserProfile {
         &self,
         db: &Arc<DB>,
         top_k: usize,
+        skip_distance_filter: bool, // Mostly for early testing purposes
     ) -> Result<Vec<(f32, UserProfile)>, MatchError> {
         // It is vital that we substitute the likeness embedding with the preference embedding
         // because we search towards likeness in accordance with the preferences of this user
@@ -290,7 +291,7 @@ impl UserProfile {
                 } // Skip if user not found
             };
 
-            let (passed, score) = self.post_filter(&candidate, 0);
+            let (passed, score) = self.post_filter(&candidate, 0, skip_distance_filter);
             if passed {
                 added_user_ids.insert(candidate.user_id);
                 users.push((score, candidate));
@@ -316,7 +317,7 @@ impl UserProfile {
                     } // Skip if user not found
                 };
 
-                let (passed, score) = self.post_filter(&candidate, level);
+                let (passed, score) = self.post_filter(&candidate, level, skip_distance_filter);
                 if passed {
                     added_user_ids.insert(candidate.user_id);
                     users.push((score, candidate));
@@ -764,7 +765,12 @@ impl UserProfile {
         self.meta.last_seen = now;
     }
 
-    fn post_filter(&self, candidate: &UserProfile, strictness_level: u8) -> (bool, f32) {
+    fn post_filter(
+        &self,
+        candidate: &UserProfile,
+        strictness_level: u8,
+        skip_distance_filter: bool,
+    ) -> (bool, f32) {
         let mut min_age = self.preferences.age_range[0];
         let mut max_age = self.preferences.age_range[1];
         let mut max_distance = self.preferences.distance_km;
@@ -777,7 +783,7 @@ impl UserProfile {
                 return (false, 0.0);
             }
 
-            if distance > max_distance as f64 {
+            if distance > max_distance as f64 && !skip_distance_filter {
                 return (false, 0.0);
             }
         } else if strictness_level == 1 {
@@ -789,7 +795,7 @@ impl UserProfile {
             // Update max distance to be more lenient
             max_distance = (max_distance as f32 * 1.5) as u32;
 
-            if distance > max_distance as f64 {
+            if distance > max_distance as f64 && !skip_distance_filter {
                 return (false, 0.0);
             }
         } else {
@@ -805,7 +811,7 @@ impl UserProfile {
             // Update max distance to be more lenient
             max_distance *= 2;
 
-            if distance > max_distance as f64 {
+            if distance > max_distance as f64 && !skip_distance_filter {
                 return (false, 0.0);
             }
         }
