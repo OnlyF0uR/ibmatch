@@ -382,10 +382,8 @@ impl UserProfile {
                         // Only if they liked us
                         if swipe_value == "1" {
                             if !include_already_swiped {
-                                // Now if we do not want to include everybody
-                                // we must filter out those we already swiped on
-                                // whether that was a like or a dislike
-                                let already_swiped = self.is_swiped_by(db, user_id)?;
+                                // Check if WE have swiped on THEM
+                                let already_swiped = self.did_swipe(db, user_id)?;
                                 if already_swiped {
                                     continue;
                                 }
@@ -767,9 +765,9 @@ impl UserProfile {
         Ok(false)
     }
 
-    fn is_swiped_by(&self, db: &Arc<DB>, other_user_id: u32) -> Result<bool, MatchError> {
-        // Because we have both user ids we can reconstruct the original swipe key
-        let swipe_key = format!("swipe:{}:{}", other_user_id, self.user_id);
+    /// Check if the current user has swiped on another user
+    fn did_swipe(&self, db: &Arc<DB>, other_user_id: u32) -> Result<bool, MatchError> {
+        let swipe_key = format!("swipe:{}:{}", self.user_id, other_user_id);
         let value = db.get(swipe_key.as_bytes())?;
         Ok(value.is_some())
     }
